@@ -1,0 +1,504 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>MELODIA AI — Video Studio</title>
+
+<style>
+*{box-sizing:border-box}
+
+body{
+ margin:0;
+ background:#0b1020;
+ color:#f4f6ff;
+ font-family:Arial,sans-serif;
+}
+
+main{
+ max-width:850px;
+ margin:35px auto;
+ padding:24px;
+}
+
+header{
+ text-align:center;
+ margin-bottom:30px;
+}
+
+h1{
+ color:#e7c879;
+ font-size:36px;
+ margin-bottom:8px;
+}
+
+.subtitle{color:#aab5cf}
+
+.panel{
+ background:#171f35;
+ border:1px solid #303c59;
+ border-radius:16px;
+ padding:25px;
+}
+
+label{
+ display:block;
+ margin:18px 0 8px;
+ font-weight:bold;
+}
+
+textarea,select{
+ width:100%;
+ background:#0e1527;
+ color:white;
+ border:1px solid #44516c;
+ border-radius:8px;
+ padding:12px;
+ font-size:15px;
+}
+
+textarea{
+ height:125px;
+ resize:vertical;
+}
+
+.grid{
+ display:grid;
+ grid-template-columns:1fr 1fr;
+ gap:16px;
+}
+
+button,.download{
+ display:block;
+ width:100%;
+ margin-top:25px;
+ padding:16px;
+ background:#e7c879;
+ color:#111827;
+ border:0;
+ border-radius:9px;
+ font-size:17px;
+ font-weight:bold;
+ cursor:pointer;
+ text-align:center;
+ text-decoration:none;
+}
+
+button:hover,.download:hover{
+ background:#f4d992;
+}
+
+button:disabled{
+ opacity:.55;
+ cursor:not-allowed;
+}
+
+.note{
+ color:#aab5cf;
+ font-size:13px;
+ margin-top:15px;
+}
+
+#summary{
+ margin-top:20px;
+ white-space:pre-line;
+ color:#e7c879;
+ line-height:1.6;
+}
+
+#videoResult{
+ display:none;
+ margin-top:28px;
+ padding-top:22px;
+ border-top:1px solid #44516c;
+}
+
+#videoResult h2{
+ color:#e7c879;
+}
+
+video{
+ width:100%;
+ background:#000;
+ border-radius:10px;
+}
+
+.progressOuter{
+ width:100%;
+ height:14px;
+ background:#303c59;
+ border-radius:10px;
+ overflow:hidden;
+ margin-top:20px;
+ display:none;
+}
+
+#progressBar{
+ width:0%;
+ height:100%;
+ background:#e7c879;
+ transition:width .4s;
+}
+
+footer{
+ text-align:center;
+ color:#8995ae;
+ margin-top:28px;
+}
+
+@media(max-width:600px){
+ .grid{grid-template-columns:1fr}
+}
+</style>
+</head>
+
+<body>
+<main>
+
+<header>
+<h1>MELODIA AI</h1>
+<div class="subtitle">
+Create Cinematic Videos With One Prompt
+</div>
+</header>
+
+<div class="panel">
+
+<label for="prompt">Describe Your Video</label>
+
+<textarea id="prompt"
+placeholder="Example: Create a peaceful prayer video for families with beautiful scenery..."></textarea>
+
+<div class="grid">
+
+<div>
+<label for="language">Primary Language</label>
+<select id="language">
+<option>English</option>
+<option>Tamil</option>
+<option>Hindi</option>
+<option>Malayalam</option>
+<option>Telugu</option>
+</select>
+</div>
+
+<div>
+<label for="captions">Caption Mode</label>
+<select id="captions" onchange="toggleSecond()">
+<option value="single">Primary Language Only</option>
+<option value="bilingual">Bilingual</option>
+<option value="none">No Captions</option>
+</select>
+</div>
+
+</div>
+
+<div id="secondBox" style="display:none">
+<label for="second">Second Language</label>
+<select id="second">
+<option>Tamil</option>
+<option>English</option>
+<option>Hindi</option>
+<option>Malayalam</option>
+<option>Telugu</option>
+</select>
+</div>
+
+<div class="grid">
+
+<div>
+<label for="music">Background Music</label>
+<select id="music">
+<option value="peaceful">Peaceful Instrumental</option>
+<option value="cinematic">Cinematic Instrumental</option>
+<option value="uplifting">Uplifting Instrumental</option>
+<option value="none">No Music</option>
+</select>
+</div>
+
+<div>
+<label for="duration">Video Duration</label>
+<select id="duration"></select>
+</div>
+
+</div>
+
+<label for="aspect">Video Format</label>
+<select id="aspect">
+<option value="16:9">16:9 Landscape</option>
+<option value="9:16">9:16 Vertical</option>
+</select>
+
+<button id="generateButton" onclick="prepare()">
+Generate My Video
+</button>
+
+<div id="summary" role="status"></div>
+
+<div class="progressOuter" id="progressOuter">
+<div id="progressBar"></div>
+</div>
+
+<div id="videoResult">
+<h2>Your Generated Video</h2>
+
+<video id="videoPlayer" controls playsinline>
+Your browser does not support video playback.
+</video>
+
+<a id="downloadButton"
+class="download"
+href="#"
+download>
+Download MP4
+</a>
+</div>
+
+<div class="note">
+Free videos include a small MELODIA AI watermark
+and a five-second promotional ending.
+</div>
+
+</div>
+
+<footer>
+MELODIA AI — Create. Inspire. Share.
+</footer>
+
+</main>
+
+<script>
+
+const duration=document.getElementById("duration");
+
+for(let i=1;i<=10;i++){
+ const option=document.createElement("option");
+ option.value=i;
+ option.textContent=i+" minute"+(i===1?"":"s");
+ if(i===3)option.selected=true;
+ duration.appendChild(option);
+}
+
+function toggleSecond(){
+ document.getElementById("secondBox").style.display=
+ document.getElementById("captions").value==="bilingual"
+ ?"block":"none";
+}
+
+const generateButton=
+ document.getElementById("generateButton");
+
+const summary=
+ document.getElementById("summary");
+
+const progressOuter=
+ document.getElementById("progressOuter");
+
+const progressBar=
+ document.getElementById("progressBar");
+
+const videoResult=
+ document.getElementById("videoResult");
+
+const videoPlayer=
+ document.getElementById("videoPlayer");
+
+const downloadButton=
+ document.getElementById("downloadButton");
+
+let activeJob=null;
+
+function setProgress(value){
+ const number=Number(value);
+ const safe=Number.isFinite(number)
+  ?Math.max(0,Math.min(100,number)):0;
+
+ progressOuter.style.display="block";
+ progressBar.style.width=safe+"%";
+}
+
+function resetResult(){
+ videoPlayer.pause();
+ videoPlayer.removeAttribute("src");
+ videoPlayer.load();
+ downloadButton.removeAttribute("href");
+ videoResult.style.display="none";
+ progressOuter.style.display="none";
+ progressBar.style.width="0%";
+}
+
+function getJobId(data){
+ return data.job_id ||
+        (data.job && data.job.job_id) ||
+        null;
+}
+
+function validJobId(value){
+ return typeof value==="string" &&
+ /^[a-f0-9]{32}$/.test(value);
+}
+
+async function readJSON(response){
+ const data=await response.json();
+ if(!response.ok){
+  throw new Error(
+   data.error ||
+   data.message ||
+   "Server returned HTTP "+response.status
+  );
+ }
+ return data;
+}
+
+async function prepare(){
+
+ if(activeJob){
+  summary.textContent=
+   "A video request is already being monitored.";
+  return;
+ }
+
+ const prompt=
+  document.getElementById("prompt").value.trim();
+
+ if(!prompt){
+  summary.textContent="Please enter a video prompt.";
+  return;
+ }
+
+ const mode=
+  document.getElementById("captions").value;
+
+ const settings={
+  prompt:prompt,
+  language:document.getElementById("language").value,
+  captions:mode,
+  second_language:mode==="bilingual"
+   ?document.getElementById("second").value
+   :null,
+  music:document.getElementById("music").value,
+  duration:Number(
+   document.getElementById("duration").value
+  ),
+  aspect_ratio:document.getElementById("aspect").value
+ };
+
+ generateButton.disabled=true;
+ resetResult();
+
+ summary.textContent="Submitting video generation request...";
+
+ try{
+
+  const response=await fetch("/api/generate",{
+   method:"POST",
+   headers:{"Content-Type":"application/json"},
+   body:JSON.stringify(settings)
+  });
+
+  const data=await readJSON(response);
+  const jobId=getJobId(data);
+
+  if(!validJobId(jobId)){
+   throw new Error(
+    "Server did not return a valid video job ID."
+   );
+  }
+
+  activeJob=jobId;
+
+  summary.textContent=
+   "Video request accepted.\n"+
+   "Job ID: "+jobId+"\n"+
+   "Status: "+(data.status||"queued");
+
+  setProgress(0);
+
+  await monitorJob(jobId);
+
+ }catch(error){
+  summary.textContent="Error: "+error.message;
+ }finally{
+  activeJob=null;
+  generateButton.disabled=false;
+ }
+}
+
+function wait(milliseconds){
+ return new Promise(resolve=>
+  setTimeout(resolve,milliseconds)
+ );
+}
+
+async function monitorJob(jobId){
+
+ while(true){
+
+  await wait(3000);
+
+  const response=await fetch(
+   "/api/jobs/"+encodeURIComponent(jobId),
+   {cache:"no-store"}
+  );
+
+  const data=await readJSON(response);
+  const job=data.job||data;
+
+  if(job.job_id && job.job_id!==jobId){
+   throw new Error("Job ID mismatch.");
+  }
+
+  const status=job.status||"unknown";
+  const progress=Number(job.progress||0);
+
+  setProgress(progress);
+
+  summary.textContent=
+   "Generating your video...\n"+
+   "Job ID: "+jobId+"\n"+
+   "Status: "+status+"\n"+
+   "Progress: "+Math.max(
+    0,Math.min(100,progress)
+   )+"%";
+
+  if(status==="completed" || status==="complete"){
+
+   const videoUrl=
+    "/api/jobs/"+encodeURIComponent(jobId)+"/video";
+
+   videoPlayer.src=videoUrl;
+   videoPlayer.load();
+
+   downloadButton.href=
+    "/api/jobs/"+encodeURIComponent(jobId)+"/download";
+
+   downloadButton.download=
+    "MELODIA_AI_"+jobId+".mp4";
+
+   videoResult.style.display="block";
+   setProgress(100);
+
+   summary.textContent=
+    "VIDEO GENERATION COMPLETE\n"+
+    "Your MP4 is ready to preview and download.";
+
+   return;
+  }
+
+  if(status==="failed" || status==="error"){
+   throw new Error(
+    job.error ||
+    job.message ||
+    "Video generation failed."
+   );
+  }
+
+  if(status==="cancelled"){
+   throw new Error("Video generation was cancelled.");
+  }
+ }
+}
+
+</script>
+</body>
+</html>
