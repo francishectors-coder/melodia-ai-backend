@@ -1,0 +1,38 @@
+
+# Python cache
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Environment variables and secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+token.json
+client_secret.json
+
+# Local IDE settings
+.idea/
+.vscode/
+
+# Generated MELODIA files
+jobs/
+outputs/
+generated_visuals/
+scene_plans/
+*.mp4
+*.wav
+*.tmp
+
+# Logs and temporary files
+*.log
+*.bak
+.DS_Store
+Thumbs.db
