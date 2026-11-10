@@ -10,7 +10,7 @@ import base64
 import tempfile
 from pathlib import Path
 
-from google import genai
+
 
 ROOT = Path(__file__).resolve().parent
 OUTPUT_DIR = ROOT / "generated_visuals"
@@ -60,6 +60,7 @@ def generate_image(
     print("Model:", MODEL)
     print("Aspect ratio:", aspect_ratio)
 
+    from google import genai
     client = genai.Client(api_key=key)
 
     image_prompt = (
