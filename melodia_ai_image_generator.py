@@ -9,7 +9,8 @@ import os
 import base64
 import tempfile
 from pathlib import Path
-
+from io import BytesIO
+from PIL import Image
 
 
 ROOT = Path(__file__).resolve().parent
@@ -136,13 +137,36 @@ def generate_image(
             + details[:1000]
         )
 
-    # PNG signature verification.
-    if not image_bytes.startswith(b"\x89PNG\r\n\x1a\n"):
+    # Verify the actual image format returned by Gemini.
+    is_png = image_bytes.startswith(
+        b"\x89PNG\r\n\x1a\n"
+    )
+
+    is_jpeg = image_bytes.startswith(
+        b"\xff\xd8\xff"
+    )
+
+    if not (is_png or is_jpeg):
         raise RuntimeError(
-            "Gemini returned image data, "
-            "but the output is not PNG."
+            "Gemini returned an unsupported image format."
         )
 
+    print(
+        "Gemini image format:",
+        "PNG" if is_png else "JPEG"
+    )
+
+    # Convert Gemini JPEG output to PNG.
+    if is_jpeg:
+        with Image.open(BytesIO(image_bytes)) as image:
+            converted = BytesIO()
+            image.convert("RGB").save(
+                converted,
+                format="PNG"
+            )
+            image_bytes = converted.getvalue()
+
+        print("Gemini JPEG converted to PNG")
     # Atomic saving prevents incomplete image files.
     temporary_path = None
 
