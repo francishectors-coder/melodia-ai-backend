@@ -1,3 +1,4 @@
+
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -7,46 +8,35 @@
 
 <style>
 *{box-sizing:border-box}
-
 body{
  margin:0;
  background:#0b1020;
  color:#f4f6ff;
  font-family:Arial,sans-serif;
 }
-
 main{
- max-width:850px;
+ max-width:900px;
  margin:35px auto;
  padding:24px;
 }
-
-header{
- text-align:center;
- margin-bottom:30px;
-}
-
+header{text-align:center;margin-bottom:30px}
 h1{
  color:#e7c879;
  font-size:36px;
  margin-bottom:8px;
 }
-
-.subtitle{color:#aab5cf}
-
+.subtitle,.note{color:#aab5cf}
 .panel{
  background:#171f35;
  border:1px solid #303c59;
  border-radius:16px;
  padding:25px;
 }
-
 label{
  display:block;
  margin:18px 0 8px;
  font-weight:bold;
 }
-
 textarea,select{
  width:100%;
  background:#0e1527;
@@ -56,18 +46,18 @@ textarea,select{
  padding:12px;
  font-size:15px;
 }
-
-textarea{
- height:125px;
- resize:vertical;
-}
-
+textarea{height:125px;resize:vertical}
 .grid{
  display:grid;
  grid-template-columns:1fr 1fr;
  gap:16px;
 }
-
+.modeSwitch{
+ display:grid;
+ grid-template-columns:1fr 1fr;
+ gap:10px;
+ margin-top:24px;
+}
 button,.download{
  display:block;
  width:100%;
@@ -83,46 +73,58 @@ button,.download{
  text-align:center;
  text-decoration:none;
 }
-
-button:hover,.download:hover{
- background:#f4d992;
-}
-
+button:hover,.download:hover{background:#f4d992}
 button:disabled{
  opacity:.55;
  cursor:not-allowed;
 }
-
+.modeButton{
+ margin:0;
+ padding:14px 8px;
+ font-size:15px;
+ background:#26324b;
+ color:#f4f6ff;
+ border:1px solid #44516c;
+}
+.modeButton.selected{
+ background:#e7c879;
+ color:#111827;
+}
+.settingsPanel{
+ margin-top:20px;
+ padding:18px;
+ background:#10192c;
+ border:1px solid #34415d;
+ border-radius:12px;
+}
+.settingsPanel h2{
+ color:#e7c879;
+ font-size:20px;
+ margin-top:0;
+}
 .note{
- color:#aab5cf;
  font-size:13px;
  margin-top:15px;
+ line-height:1.6;
 }
-
 #summary{
  margin-top:20px;
  white-space:pre-line;
  color:#e7c879;
  line-height:1.6;
 }
-
 #videoResult{
  display:none;
  margin-top:28px;
  padding-top:22px;
  border-top:1px solid #44516c;
 }
-
-#videoResult h2{
- color:#e7c879;
-}
-
+#videoResult h2{color:#e7c879}
 video{
  width:100%;
  background:#000;
  border-radius:10px;
 }
-
 .progressOuter{
  width:100%;
  height:14px;
@@ -132,22 +134,22 @@ video{
  margin-top:20px;
  display:none;
 }
-
 #progressBar{
  width:0%;
  height:100%;
  background:#e7c879;
  transition:width .4s;
 }
-
 footer{
  text-align:center;
  color:#8995ae;
  margin-top:28px;
 }
-
 @media(max-width:600px){
+ main{padding:12px}
+ .panel{padding:18px}
  .grid{grid-template-columns:1fr}
+ .modeButton{font-size:13px}
 }
 </style>
 </head>
@@ -165,15 +167,58 @@ Create Cinematic Videos With One Prompt
 <div class="panel">
 
 <label for="prompt">Describe Your Video</label>
-
 <textarea id="prompt"
-placeholder="Example: Create a peaceful prayer video for families with beautiful scenery..."></textarea>
+ placeholder="Example: Create a bilingual English and Tamil prayer video with peaceful mountain scenery."></textarea>
+
+<div class="modeSwitch">
+<button type="button" id="defaultButton"
+ class="modeButton selected"
+ onclick="setMode('default')">
+Default
+</button>
+
+<button type="button" id="advancedButton"
+ class="modeButton"
+ onclick="setMode('advanced')">
+Advanced Customization
+</button>
+</div>
+
+<div id="defaultPanel" class="settingsPanel">
+<h2>Default Mode</h2>
+
+<label for="recommendedStyle">
+Recommended Video Style
+</label>
+<select id="recommendedStyle"
+ onchange="updateStyleDescription()">
+<option value="auto">
+Automatic — Let MELODIA AI Decide
+</option>
+<option value="quotes">Inspirational Quotes</option>
+<option value="prayer">Prayer &amp; Devotional</option>
+<option value="educational">Educational / Explainer</option>
+<option value="nature">Cinematic Nature</option>
+<option value="news">News &amp; Information</option>
+<option value="promotional">Promotional / Business</option>
+</select>
+
+<p class="note" id="styleDescription"></p>
+
+<p class="note">
+English is the default language. You can request Tamil,
+Hindi, Malayalam, Telugu or bilingual captions in your prompt.
+</p>
+</div>
+
+<div id="advancedPanel" class="settingsPanel"
+ style="display:none">
+<h2>Advanced Customization</h2>
 
 <div class="grid">
-
 <div>
 <label for="language">Primary Language</label>
-<select id="language">
+<select id="language" onchange="updateSecond()">
 <option>English</option>
 <option>Tamil</option>
 <option>Hindi</option>
@@ -190,11 +235,10 @@ placeholder="Example: Create a peaceful prayer video for families with beautiful
 <option value="none">No Captions</option>
 </select>
 </div>
-
 </div>
 
 <div id="secondBox" style="display:none">
-<label for="second">Second Language</label>
+<label for="second">Secondary Language</label>
 <select id="second">
 <option>Tamil</option>
 <option>English</option>
@@ -204,36 +248,57 @@ placeholder="Example: Create a peaceful prayer video for families with beautiful
 </select>
 </div>
 
-<div class="grid">
+<label for="background">Background Style</label>
+<select id="background">
+<option value="auto">Automatically Selected</option>
+<option value="scenic">Scenic Still Images</option>
+<option value="plain">Plain Colour / Gradient</option>
+</select>
 
-<div>
-<label for="music">Background Music</label>
+<label for="movement">Background Movement</label>
+<select id="movement">
+<option value="still">Stationary Images</option>
+<option value="gentle">Gentle Cinematic Movement</option>
+</select>
+
+<label for="audio">Audio Style</label>
+<select id="audio">
+<option value="auto">Automatically Selected</option>
+<option value="none">Silence</option>
+<option value="music">Gentle Instrumental Music</option>
+<option value="nature">Natural Environmental Sounds</option>
+<option value="both">Music and Natural Sounds</option>
+</select>
+
+<label for="music">Instrumental Music Style</label>
 <select id="music">
-<option value="peaceful">Peaceful Instrumental</option>
-<option value="cinematic">Cinematic Instrumental</option>
-<option value="uplifting">Uplifting Instrumental</option>
+<option value="peaceful">Peaceful</option>
+<option value="cinematic">Cinematic</option>
+<option value="uplifting">Uplifting</option>
 <option value="none">No Music</option>
 </select>
 </div>
 
+<div class="grid">
 <div>
 <label for="duration">Video Duration</label>
 <select id="duration"></select>
 </div>
 
-</div>
-
+<div>
 <label for="aspect">Video Format</label>
 <select id="aspect">
 <option value="16:9">16:9 Landscape</option>
 <option value="9:16">9:16 Vertical</option>
 </select>
+</div>
+</div>
 
 <button id="generateButton" onclick="prepare()">
 Generate My Video
 </button>
 
-<div id="summary" role="status"></div>
+<div id="summary" role="status" aria-live="polite"></div>
 
 <div class="progressOuter" id="progressOuter">
 <div id="progressBar"></div>
@@ -246,17 +311,18 @@ Generate My Video
 Your browser does not support video playback.
 </video>
 
-<a id="downloadButton"
-class="download"
-href="#"
-download>
+<a id="downloadButton" class="download"
+ href="#" download>
 Download MP4
 </a>
 </div>
 
 <div class="note">
-Free videos include a small MELODIA AI watermark
-and a five-second promotional ending.
+Current development version: image-based video rendering
+and multilingual captions are supported. Background audio,
+manual style overrides, and certain visual effects are
+still under development. Free-tier watermark and promotional
+ending are planned but not yet verified.
 </div>
 
 </div>
@@ -268,136 +334,298 @@ MELODIA AI — Create. Inspire. Share.
 </main>
 
 <script>
+"use strict";
 
-const duration=document.getElementById("duration");
+const $ = id => document.getElementById(id);
 
-for(let i=1;i<=10;i++){
+let studioMode = "default";
+let activeJob = null;
+
+const styleDescriptions = {
+ auto: "MELODIA AI analyzes your prompt and selects supported video settings automatically.",
+ quotes: "Inspirational quote style — manual override is not yet connected.",
+ prayer: "Prayer and devotional style — manual override is not yet connected.",
+ educational: "Educational style — manual override is not yet connected.",
+ nature: "Cinematic nature style — manual override is not yet connected.",
+ news: "News style — manual override is not yet connected.",
+ promotional: "Promotional style — manual override is not yet connected."
+};
+
+const videoDurations = [
+ {value:0.5,label:"30 secs"},
+ {value:1,label:"60 secs"},
+ {value:2,label:"2 mins"},
+ {value:3,label:"3 mins"},
+ {value:4,label:"4 mins"},
+ {value:5,label:"5 mins"},
+ {value:6,label:"6 mins"},
+ {value:7,label:"7 mins"},
+ {value:8,label:"8 mins"},
+ {value:9,label:"9 mins"},
+ {value:10,label:"10 mins"}
+];
+
+for(const item of videoDurations){
  const option=document.createElement("option");
- option.value=i;
- option.textContent=i+" minute"+(i===1?"":"s");
- if(i===3)option.selected=true;
- duration.appendChild(option);
+ option.value=String(item.value);
+ option.textContent=item.label;
+
+ if(item.value===3){
+  option.selected=true;
+ }
+
+ $("duration").appendChild(option);
+}
+
+function setMode(mode){
+ if(activeJob)return;
+ if(!["default","advanced"].includes(mode))return;
+
+ studioMode=mode;
+
+ $("defaultPanel").style.display=
+  mode==="default"?"block":"none";
+
+ $("advancedPanel").style.display=
+  mode==="advanced"?"block":"none";
+
+ $("defaultButton").classList.toggle(
+  "selected",mode==="default");
+
+ $("advancedButton").classList.toggle(
+  "selected",mode==="advanced");
+}
+
+function updateStyleDescription(){
+ const style=$("recommendedStyle").value;
+ $("styleDescription").textContent=
+  styleDescriptions[style]||"";
+}
+
+function updateSecond(){
+ const primary=$("language").value;
+ const second=$("second");
+
+ for(const option of second.options){
+  option.disabled=option.value===primary;
+ }
+
+ if(second.value===primary){
+  const replacement=[...second.options].find(
+   option=>!option.disabled
+  );
+
+  if(replacement){
+   second.value=replacement.value;
+  }
+ }
 }
 
 function toggleSecond(){
- document.getElementById("secondBox").style.display=
- document.getElementById("captions").value==="bilingual"
- ?"block":"none";
+ $("secondBox").style.display=
+  $("captions").value==="bilingual"
+  ?"block":"none";
+
+ updateSecond();
 }
-
-const generateButton=
- document.getElementById("generateButton");
-
-const summary=
- document.getElementById("summary");
-
-const progressOuter=
- document.getElementById("progressOuter");
-
-const progressBar=
- document.getElementById("progressBar");
-
-const videoResult=
- document.getElementById("videoResult");
-
-const videoPlayer=
- document.getElementById("videoPlayer");
-
-const downloadButton=
- document.getElementById("downloadButton");
-
-let activeJob=null;
 
 function setProgress(value){
  const number=Number(value);
- const safe=Number.isFinite(number)
-  ?Math.max(0,Math.min(100,number)):0;
 
- progressOuter.style.display="block";
- progressBar.style.width=safe+"%";
+ const safe=Number.isFinite(number)
+  ?Math.max(0,Math.min(100,number))
+  :0;
+
+ $("progressOuter").style.display="block";
+ $("progressBar").style.width=safe+"%";
 }
 
 function resetResult(){
- videoPlayer.pause();
- videoPlayer.removeAttribute("src");
- videoPlayer.load();
- downloadButton.removeAttribute("href");
- videoResult.style.display="none";
- progressOuter.style.display="none";
- progressBar.style.width="0%";
-}
+ $("videoPlayer").pause();
+ $("videoPlayer").removeAttribute("src");
+ $("videoPlayer").load();
 
-function getJobId(data){
- return data.job_id ||
-        (data.job && data.job.job_id) ||
-        null;
+ $("downloadButton").removeAttribute("href");
+ $("videoResult").style.display="none";
+ $("progressOuter").style.display="none";
+ $("progressBar").style.width="0%";
 }
 
 function validJobId(value){
  return typeof value==="string" &&
- /^[a-f0-9]{32}$/.test(value);
+  /^[a-f0-9]{32}$/.test(value);
 }
 
 async function readJSON(response){
- const data=await response.json();
+ let data;
+
+ try{
+  data=await response.json();
+ }catch(error){
+  throw new Error(
+   "Server returned an invalid response."
+  );
+ }
+
  if(!response.ok){
   throw new Error(
-   data.error ||
-   data.message ||
+   data.error||
+   data.message||
    "Server returned HTTP "+response.status
   );
  }
+
  return data;
 }
 
-async function prepare(){
+function wait(milliseconds){
+ return new Promise(resolve=>
+  setTimeout(resolve,milliseconds)
+ );
+}
 
+function buildSettings(){
+ const prompt=$("prompt").value.trim();
+
+ if(!prompt){
+  throw new Error(
+   "Please enter a video prompt."
+  );
+ }
+
+ if(prompt.length>3000){
+  throw new Error(
+   "Prompt exceeds 3000 characters."
+  );
+ }
+
+ const duration=Number(
+  $("duration").value
+ );
+
+ const allowedDurations=[
+  0.5,1,2,3,4,5,6,7,8,9,10
+ ];
+
+ if(!allowedDurations.includes(duration)){
+  throw new Error(
+   "Invalid video duration."
+  );
+ }
+
+ if(studioMode==="default"){
+  if($("recommendedStyle").value!=="auto"){
+   throw new Error(
+    "Manual video-style overrides are not yet "+
+    "connected. Select Automatic to continue. "+
+    "No video job has been submitted."
+   );
+  }
+
+  return {
+   mode:"default",
+   prompt:prompt,
+   duration:duration
+  };
+ }
+
+ const background=$("background").value;
+ const movement=$("movement").value;
+ const audio=$("audio").value;
+
+ if(background!=="auto" ||
+    movement!=="still" ||
+    audio!=="auto"){
+  throw new Error(
+   "The selected background, movement or audio "+
+   "option requires further backend integration. "+
+   "No video job has been submitted."
+  );
+ }
+
+ const captions=$("captions").value;
+
+ return {
+  mode:"advanced",
+  prompt:prompt,
+  language:$("language").value,
+  captions:captions,
+  second_language:captions==="bilingual"
+   ?$("second").value
+   :null,
+  music:$("music").value,
+  duration:duration,
+  aspect_ratio:$("aspect").value
+ };
+}
+
+function formatRecommendation(data){
+ const rec=data.recommendation||{};
+ const settings=data.settings||{};
+
+ if(data.mode!=="default"){
+  return "Mode: Advanced Customization";
+ }
+
+ return [
+  "Mode: Automatic",
+  "Detected subject: "+
+   (rec.subject||"general"),
+  "Recommended style: "+
+   (rec.recommended_style||"auto"),
+  "Primary language: "+
+   (settings.language||"English"),
+  "Captions: "+
+   (settings.captions||"single"),
+  "Secondary language: "+
+   (settings.second_language||"None"),
+  "Video format: "+
+   (settings.aspect_ratio||"16:9")
+ ].join("\n");
+}
+
+async function prepare(){
  if(activeJob){
-  summary.textContent=
+  $("summary").textContent=
    "A video request is already being monitored.";
   return;
  }
 
- const prompt=
-  document.getElementById("prompt").value.trim();
+ let settings;
 
- if(!prompt){
-  summary.textContent="Please enter a video prompt.";
+ try{
+  settings=buildSettings();
+ }catch(error){
+  $("summary").textContent=error.message;
   return;
  }
 
- const mode=
-  document.getElementById("captions").value;
+ $("generateButton").disabled=true;
+ $("defaultButton").disabled=true;
+ $("advancedButton").disabled=true;
 
- const settings={
-  prompt:prompt,
-  language:document.getElementById("language").value,
-  captions:mode,
-  second_language:mode==="bilingual"
-   ?document.getElementById("second").value
-   :null,
-  music:document.getElementById("music").value,
-  duration:Number(
-   document.getElementById("duration").value
-  ),
-  aspect_ratio:document.getElementById("aspect").value
- };
-
- generateButton.disabled=true;
  resetResult();
 
- summary.textContent="Submitting video generation request...";
+ $("summary").textContent=
+  "Submitting video generation request...";
 
  try{
-
-  const response=await fetch("/api/generate",{
-   method:"POST",
-   headers:{"Content-Type":"application/json"},
-   body:JSON.stringify(settings)
-  });
+  const response=await fetch(
+   "/api/generate",
+   {
+    method:"POST",
+    headers:{
+     "Content-Type":"application/json"
+    },
+    body:JSON.stringify(settings)
+   }
+  );
 
   const data=await readJSON(response);
-  const jobId=getJobId(data);
+
+  const jobId=data.job_id||
+   (data.job&&data.job.job_id)||
+   null;
 
   if(!validJobId(jobId)){
    throw new Error(
@@ -407,45 +635,53 @@ async function prepare(){
 
   activeJob=jobId;
 
-  summary.textContent=
+  const recommendationText=
+   formatRecommendation(data);
+
+  $("summary").textContent=
    "Video request accepted.\n"+
    "Job ID: "+jobId+"\n"+
-   "Status: "+(data.status||"queued");
+   "Status: "+(data.status||"queued")+
+   "\n\n"+recommendationText;
 
   setProgress(0);
 
-  await monitorJob(jobId);
+  await monitorJob(
+   jobId,
+   recommendationText
+  );
 
  }catch(error){
-  summary.textContent="Error: "+error.message;
+  $("summary").textContent=
+   "Error: "+error.message;
  }finally{
   activeJob=null;
-  generateButton.disabled=false;
+  $("generateButton").disabled=false;
+  $("defaultButton").disabled=false;
+  $("advancedButton").disabled=false;
  }
 }
 
-function wait(milliseconds){
- return new Promise(resolve=>
-  setTimeout(resolve,milliseconds)
- );
-}
-
-async function monitorJob(jobId){
-
+async function monitorJob(
+ jobId,
+ recommendationText
+){
  while(true){
-
   await wait(3000);
 
   const response=await fetch(
-   "/api/jobs/"+encodeURIComponent(jobId),
+   "/api/jobs/"+
+   encodeURIComponent(jobId),
    {cache:"no-store"}
   );
 
   const data=await readJSON(response);
   const job=data.job||data;
 
-  if(job.job_id && job.job_id!==jobId){
-   throw new Error("Job ID mismatch.");
+  if(job.job_id&&job.job_id!==jobId){
+   throw new Error(
+    "Job ID mismatch."
+   );
   }
 
   const status=job.status||"unknown";
@@ -453,51 +689,77 @@ async function monitorJob(jobId){
 
   setProgress(progress);
 
-  summary.textContent=
+  $("summary").textContent=
    "Generating your video...\n"+
    "Job ID: "+jobId+"\n"+
    "Status: "+status+"\n"+
-   "Progress: "+Math.max(
-    0,Math.min(100,progress)
-   )+"%";
+   "Progress: "+
+   Math.max(0,Math.min(100,progress))+
+   "%\n\n"+recommendationText;
 
-  if(status==="completed" || status==="complete"){
+  if(
+   status==="completed"||
+   status==="complete"
+  ){
+   $("videoPlayer").src=
+    "/api/jobs/"+
+    encodeURIComponent(jobId)+
+    "/video";
 
-   const videoUrl=
-    "/api/jobs/"+encodeURIComponent(jobId)+"/video";
+   $("videoPlayer").load();
 
-   videoPlayer.src=videoUrl;
-   videoPlayer.load();
+   $("downloadButton").href=
+    "/api/jobs/"+
+    encodeURIComponent(jobId)+
+    "/download";
 
-   downloadButton.href=
-    "/api/jobs/"+encodeURIComponent(jobId)+"/download";
-
-   downloadButton.download=
+   $("downloadButton").download=
     "MELODIA_AI_"+jobId+".mp4";
 
-   videoResult.style.display="block";
+   $("videoResult").style.display="block";
+
    setProgress(100);
 
-   summary.textContent=
+   $("summary").textContent=
     "VIDEO GENERATION COMPLETE\n"+
     "Your MP4 is ready to preview and download.";
 
    return;
   }
 
-  if(status==="failed" || status==="error"){
+  if(
+   status==="failed"||
+   status==="error"
+  ){
    throw new Error(
-    job.error ||
-    job.message ||
+    job.error||
+    job.message||
     "Video generation failed."
    );
   }
 
   if(status==="cancelled"){
-   throw new Error("Video generation was cancelled.");
+   throw new Error(
+    "Video generation was cancelled."
+   );
+  }
+
+  if(status==="paused_quota"){
+   $("summary").textContent=
+    "Image-generation quota reached.\n"+
+    "Job ID: "+jobId+"\n"+
+    "Existing progress has been preserved.\n"+
+    "Resume this job when quota is available.";
+
+   return;
   }
  }
 }
+
+updateSecond();
+toggleSecond();
+updateStyleDescription();
+setMode("default");
 
 </script>
 </body>
