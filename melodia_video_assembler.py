@@ -60,10 +60,19 @@ def run_ffmpeg(arguments):
         "-filter_complex_threads", "1"
     ] + arguments
 
-    subprocess.run(
-        command,
-        check=True
+    result = subprocess.run(
+    command,
+    capture_output=True,
+    text=True
     )
+
+    if result.returncode != 0:
+        raise RuntimeError(
+            "FFmpeg failed with exit code "
+            + str(result.returncode)
+            + "\n"
+            + (result.stderr or "No FFmpeg error details available")
+        )
 
 
 def ass_time(seconds):
