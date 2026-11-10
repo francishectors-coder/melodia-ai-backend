@@ -69,7 +69,7 @@ def generate_image(
             }
         ],
         "generationConfig": {
-            "responseModalities": ["IMAGE"],
+            "responseModalities": ["TEXT", "IMAGE"],
             "imageConfig": {
                 "aspectRatio": aspect_ratio
             }
