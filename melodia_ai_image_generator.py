@@ -1,15 +1,16 @@
 
 # MELODIA AI - GEMINI CLOUD IMAGE GENERATOR
-# Step 1332.19
-# Preserves generate_image() interface and earlier backups.
+# Step 1333.72
+# Google Gen AI SDK - Interactions API
+# Preserves the existing generate_image() interface.
+# Previous versions must remain backed up.
 
 import os
-import json
 import base64
 import tempfile
-import urllib.request
-import urllib.error
 from pathlib import Path
+
+from google import genai
 
 ROOT = Path(__file__).resolve().parent
 OUTPUT_DIR = ROOT / "generated_visuals"
@@ -17,11 +18,6 @@ OUTPUT_DIR = ROOT / "generated_visuals"
 MODEL = os.getenv(
     "MELODIA_IMAGE_MODEL",
     "gemini-3.1-flash-lite-image"
-)
-
-API_URL = (
-    "https://generativelanguage.googleapis.com/"
-    f"v1beta/models/{MODEL}:generateContent"
 )
 
 TEST_PROMPT = (
@@ -60,116 +56,93 @@ def generate_image(
         exist_ok=True
     )
 
-    payload = {
-        "contents": [
-            {
-                "parts": [
-                    {"text": prompt}
-                ]
-            }
-        ],
-        "generationConfig": {
-            "responseModalities": ["TEXT", "IMAGE"],
-            "imageConfig": {
-                "aspectRatio": aspect_ratio
-            }
-        }
-    }
-
-    request = urllib.request.Request(
-        API_URL,
-        data=json.dumps(payload).encode("utf-8"),
-        headers={
-            "Content-Type": "application/json",
-            "x-goog-api-key": key
-        },
-        method="POST"
-    )
-
     print("MELODIA AI - GEMINI IMAGE GENERATION")
     print("Model:", MODEL)
     print("Aspect ratio:", aspect_ratio)
 
-    try:
-        with urllib.request.urlopen(
-            request,
-            timeout=timeout
-        ) as response:
-            result = json.loads(
-                response.read().decode("utf-8")
-            )
+    client = genai.Client(api_key=key)
 
-    except urllib.error.HTTPError as error:
-        details = error.read().decode(
-            "utf-8",
-            errors="replace"
-        )
-        raise RuntimeError(
-            f"Gemini API HTTP {error.code}: "
-            + details[:1000]
-        ) from None
-
-    except urllib.error.URLError as error:
-        raise RuntimeError(
-            "Gemini connection failed: "
-            + str(error.reason)
-        ) from None
-
-    candidates = result.get("candidates", [])
-
-    if not candidates:
-        raise RuntimeError(
-            "Gemini returned no image candidates"
-        )
-
-    parts = (
-        candidates[0]
-        .get("content", {})
-        .get("parts", [])
+    image_prompt = (
+        prompt.strip()
+        + "\nGenerate a photorealistic cinematic image."
+        + f"\nRequired composition: {aspect_ratio}."
+        + "\nDo not include captions or decorative text."
     )
 
+    generation_config = {
+        "temperature": 1,
+        "max_output_tokens": 65536,
+        "top_p": 0.95,
+        "thinking_level": "minimal",
+        "image_config": {
+            "image_size": "1K",
+            "aspect_ratio": aspect_ratio
+        }
+    }
+
+    try:
+        interaction = client.interactions.create(
+            model="models/" + MODEL,
+            input=image_prompt,
+            generation_config=generation_config,
+            response_modalities=["image", "text"]
+        )
+    except Exception as error:
+        raise RuntimeError(
+            "Gemini Interactions API failed: "
+            + str(error)
+        ) from error
+
     image_bytes = None
+    response_text = []
 
-    for part in parts:
-        inline_data = part.get("inlineData", {})
-        encoded = inline_data.get("data")
+    for step in getattr(interaction, "steps", []) or []:
+        if getattr(step, "type", None) != "model_output":
+            continue
 
-        if encoded:
-            image_bytes = base64.b64decode(encoded)
+        for part in getattr(step, "content", []) or []:
+            part_type = getattr(part, "type", None)
+
+            if part_type == "image":
+                encoded = getattr(part, "data", None)
+
+                if encoded:
+                    if isinstance(encoded, bytes):
+                        image_bytes = base64.b64decode(encoded)
+                    else:
+                        image_bytes = base64.b64decode(
+                            str(encoded)
+                        )
+                    break
+
+            elif part_type == "text":
+                message = getattr(part, "text", None)
+
+                if message:
+                    response_text.append(str(message))
+
+        if image_bytes:
             break
 
-    
     if not image_bytes:
-        diagnostics = {
-            "model": MODEL,
-            "candidate_count": len(candidates),
-            "finish_reasons": [
-                candidate.get("finishReason")
-                for candidate in candidates
-            ],
-            "part_types": [
-                list(part.keys())
-                for candidate in candidates
-                for part in candidate.get(
-                    "content", {}
-                ).get("parts", [])
-            ],
-            "prompt_feedback": result.get(
-                "promptFeedback"
-            )
-        }
+        details = " | ".join(response_text)
+
+        if not details:
+            details = "No image content in model output"
 
         raise RuntimeError(
             "Gemini returned no image data. "
-            "Diagnostics: "
-            + json.dumps(
-                diagnostics,
-                ensure_ascii=False
-            )
+            + details[:1000]
         )
 
+    # PNG signature verification.
+    if not image_bytes.startswith(b"\x89PNG\r\n\x1a\n"):
+        raise RuntimeError(
+            "Gemini returned image data, "
+            "but the output is not PNG."
+        )
 
-    # Write atomically to avoid incomplete output files.
+    # Atomic saving prevents incomplete image files.
     temporary_path = None
 
     try:
@@ -183,7 +156,10 @@ def generate_image(
             temporary_path = Path(file.name)
             file.write(image_bytes)
 
-        os.replace(temporary_path, output_path)
+        os.replace(
+            temporary_path,
+            output_path
+        )
 
     finally:
         if (
