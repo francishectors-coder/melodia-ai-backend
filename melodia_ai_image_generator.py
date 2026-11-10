@@ -138,6 +138,7 @@ def generate_image(
             image_bytes = base64.b64decode(encoded)
             break
 
+    
     if not image_bytes:
         diagnostics = {
             "model": MODEL,
@@ -146,26 +147,27 @@ def generate_image(
                 candidate.get("finishReason")
                 for candidate in candidates
             ],
-        "part_types": [
-            list(part.keys())
-            for candidate in candidates
-            for part in candidate.get(
-                "content", {}
-            ).get("parts", [])
-        ],
-        "prompt_feedback": result.get(
-            "promptFeedback"
-        )
-    }
+            "part_types": [
+                list(part.keys())
+                for candidate in candidates
+                for part in candidate.get(
+                    "content", {}
+                ).get("parts", [])
+            ],
+            "prompt_feedback": result.get(
+                "promptFeedback"
+            )
+        }
 
-    raise RuntimeError(
-        "Gemini returned no image data. "
-        "Diagnostics: "
-        + json.dumps(
-            diagnostics,
-            ensure_ascii=False
+        raise RuntimeError(
+            "Gemini returned no image data. "
+            "Diagnostics: "
+            + json.dumps(
+                diagnostics,
+                ensure_ascii=False
+            )
         )
-    )
+
 
     # Write atomically to avoid incomplete output files.
     temporary_path = None
