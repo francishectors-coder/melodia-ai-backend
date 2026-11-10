@@ -50,6 +50,8 @@ def get_video_resolution(aspect_ratio):
 
 
 def run_ffmpeg(arguments):
+    import shutil
+    print("FFmpeg executable:", shutil.which("ffmpeg"))
     command = [
         "ffmpeg",
         "-hide_banner",
