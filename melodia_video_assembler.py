@@ -462,7 +462,7 @@ def render_video(
 
         run_ffmpeg(
             arguments + [
-                "-/filter_complex",
+                "-filter_complex",
                 str(filter_file),
                 "-map", f"[{current}]",
                 "-an",
