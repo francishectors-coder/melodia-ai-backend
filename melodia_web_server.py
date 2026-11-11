@@ -1,6 +1,6 @@
 
 # MELODIA AI - WEB SERVER
-# Step 1190 - 30-Second Duration Support
+# Step 1336.70 - Free test bypass for prompt analysis
 # Default and Advanced Mode Support
 
 import json
@@ -305,6 +305,32 @@ def prepare_video_settings(data):
     # Keep existing whole-minute jobs in their original integer format.
     if minutes.is_integer():
         minutes = int(minutes)
+
+    # Explicit no-Gemini test. This bypasses prompt analysis and forces
+    # the exact settings expected by the isolated worker test path.
+    # It is activated only when the prompt contains [FREE TEST].
+    if "[FREE TEST]" in prompt.upper():
+        settings = {
+            "prompt": prompt,
+            "language": "English",
+            "captions": "single",
+            "second_language": None,
+            "music": "none",
+            "duration": 0.5,
+            "aspect_ratio": "16:9",
+            "audio": "none"
+        }
+        error = validate_settings(settings)
+        if error:
+            raise ValueError(error)
+        return settings, {
+            "mode": mode,
+            "recommendation_source": "free_test",
+            "subject": "free_test",
+            "recommended_style": "test",
+            "background": "local_test_images",
+            "audio": "none"
+        }
 
     if mode == "default":
         analysis = analyze_prompt(prompt)
