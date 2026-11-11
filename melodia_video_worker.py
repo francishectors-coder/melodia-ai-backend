@@ -1459,11 +1459,9 @@ def prepare_free_test(job_id, job=None):
     scenes = []
     records = []
 
-    captions = (
-        clean_prompt,
-        f"A closer look: {clean_prompt}",
-        f"The final scene: {clean_prompt}"
-    )
+    from melodia_story_caption_planner import generate_story_captions
+
+    captions = generate_story_captions(clean_prompt)
 
     for index, item in enumerate(generated, 1):
         image_path = Path(item["image_path"])
