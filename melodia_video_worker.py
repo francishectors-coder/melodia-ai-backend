@@ -1,4 +1,3 @@
-
 # MELODIA AI - AUTOMATIC VIDEO WORKER
 # Step 1336.76 - Free-test instrumental audio correction
 # Existing production flow retained; test activated by [FREE TEST] in prompt.
@@ -291,43 +290,85 @@ def mux_free_test_music(silent_video, destination):
 
 
 def process_free_test(job_file, job):
+    """Render the free video, then call the existing V5 music engine."""
     job_id = job['job_id']
     final_video = OUTPUTS / f'{job_id}.mp4'
-    if final_video.is_file() and final_video.stat().st_size > 0:
-        # Do not overwrite previous completed test videos.
-        finish_job(job_file, job, final_video)
-        return
+    silent_master = OUTPUTS / f'{job_id}_silent_master.mp4'
+    wants_music = free_test_music_enabled(job)
     try:
         job['status'] = 'preparing'
         job['progress'] = 10
         job.pop('error', None)
         save_job(job_file, job)
-        plan_path, caption_path = prepare_free_test(job_id)
-        print('FREE TEST: local visuals and captions ready:', plan_path, caption_path, flush=True)
-        job['status'] = 'rendering'
-        job['progress'] = 50
-        save_job(job_file, job)
-        if free_test_music_enabled(job):
-            # Assembler writes the usual video-only file. Move it to a
-            # preserved silent master before muxing the soundtrack.
-            rendered = Path(assemble_video(job_id))
-            silent_master = OUTPUTS / f'{job_id}_silent_master.mp4'
+        prepare_free_test(job_id)
+
+        # An old silent file must not be mistaken for a music-enabled result.
+        if wants_music and final_video.is_file():
+            probe = shutil.which('ffprobe')
+            has_audio = False
+            if probe:
+                result = subprocess.run([
+                    probe, '-v', 'error', '-select_streams', 'a:0',
+                    '-show_entries', 'stream=codec_name',
+                    '-of', 'default=noprint_wrappers=1:nokey=1',
+                    str(final_video)
+                ], capture_output=True, text=True)
+                has_audio = result.returncode == 0 and bool(result.stdout.strip())
+            if has_audio:
+                finish_job(job_file, job, final_video)
+                return
             if not silent_master.exists():
-                os.replace(rendered, silent_master)
-            job['status'] = 'adding_music'
-            job['progress'] = 90
+                os.replace(final_video, silent_master)
+            else:
+                raise RuntimeError('Silent output and silent master both exist; refusing overwrite')
+
+        if not silent_master.is_file() and not final_video.is_file():
+            job['status'] = 'rendering'
+            job['progress'] = 50
             save_job(job_file, job)
-            mux_free_test_music(silent_master, final_video)
-            print('FREE TEST: instrumental AAC audio added', flush=True)
-        else:
             rendered = Path(assemble_video(job_id))
-            if rendered != final_video:
-                raise RuntimeError('Unexpected free-test output path')
-            print('FREE TEST: music disabled by user setting', flush=True)
+            if not rendered.is_file() or rendered.stat().st_size == 0:
+                raise RuntimeError('Free-test video was not rendered')
+            if wants_music:
+                if silent_master.exists():
+                    raise RuntimeError('Silent master exists; refusing overwrite')
+                os.replace(rendered, silent_master)
+            elif rendered != final_video:
+                os.replace(rendered, final_video)
+
+        if wants_music:
+            job['status'] = 'generating_music'
+            job['progress'] = 85
+            save_job(job_file, job)
+            print('FREE TEST: calling V5 generate_job_soundtrack', flush=True)
+            music_file = Path(generate_job_soundtrack(job_id))
+            if not music_file.is_file() or music_file.stat().st_size <= 44:
+                raise RuntimeError('V5 music engine returned no usable soundtrack')
+            job['status'] = 'adding_music'
+            job['progress'] = 95
+            save_job(job_file, job)
+            with tempfile.TemporaryDirectory(prefix='melodia_v5_', dir=OUTPUTS) as tmp:
+                combined = Path(tmp) / 'combined.mp4'
+                add_music_to_video(silent_master, music_file, combined)
+                if not combined.is_file() or combined.stat().st_size == 0:
+                    raise RuntimeError('Music muxing produced no MP4')
+                probe = shutil.which('ffprobe')
+                if not probe:
+                    raise RuntimeError('ffprobe required to verify soundtrack')
+                checked = subprocess.run([
+                    probe, '-v', 'error', '-select_streams', 'a:0',
+                    '-show_entries', 'stream=codec_name',
+                    '-of', 'default=noprint_wrappers=1:nokey=1',
+                    str(combined)
+                ], capture_output=True, text=True)
+                if checked.returncode != 0 or 'aac' not in checked.stdout.lower():
+                    raise RuntimeError('Muxed video has no AAC audio stream')
+                os.replace(combined, final_video)
+            print('FREE TEST: V5 soundtrack verified in MP4', flush=True)
         finish_job(job_file, job, final_video)
     except Exception as error:
         job['status'] = 'failed'
-        job['error'] = 'Free video assembly test failed: ' + str(error)
+        job['error'] = 'Free video/music integration failed: ' + str(error)
         save_job(job_file, job)
         print('FREE TEST FAILED:', error, flush=True)
 
@@ -340,7 +381,7 @@ def process_job(job_file, job):
         return
 
     settings = job.get('settings') or {}
-    audio_mode = settings.get('audio', 'none')
+    audio_mode = 'music' if free_test_music_enabled(job) else settings.get('audio', 'none')
     if audio_mode not in ('none', 'music'):
         job['status'] = 'failed'
         job['error'] = 'Audio mode not yet supported: ' + str(audio_mode)
