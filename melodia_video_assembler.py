@@ -1,6 +1,6 @@
 
 # MELODIA AI - MULTILINGUAL VIDEO ASSEMBLER
-# Step 1336.62
+# Step 1336.73
 #
 # Render FFmpeg compatibility correction:
 # Uses -filter_complex_script instead of -/filter_complex.
@@ -11,6 +11,7 @@
 # - Single-language and bilingual captions
 # - Cinematic crossfade transitions
 # - Existing scene-plan and caption JSON formats
+# - Optional instrumental audio (AAC)
 
 import json
 import math
@@ -18,6 +19,7 @@ import os
 import re
 import subprocess
 import tempfile
+import shutil
 from pathlib import Path
 
 
@@ -57,8 +59,6 @@ def get_video_resolution(aspect_ratio):
 
 
 def run_ffmpeg(arguments):
-    import shutil
-
     executable = shutil.which("ffmpeg")
 
     print(
@@ -520,6 +520,92 @@ def render_video(
         )
 
 
+
+def music_requested(plan, scenes):
+    """Respect explicit music settings; do not add music to silent jobs."""
+    settings = [plan]
+    if scenes:
+        settings.append(scenes[0])
+    for settings_obj in settings:
+        for key in ("music_enabled", "background_music_enabled", "include_music"):
+            if key in settings_obj:
+                value = settings_obj[key]
+                if isinstance(value, str):
+                    return value.strip().lower() in ("yes", "true", "on", "1")
+                return bool(value)
+        for key in ("music", "background_music", "music_style", "music_mode"):
+            if key in settings_obj:
+                value = settings_obj[key]
+                if isinstance(value, bool):
+                    return value
+                if value is None:
+                    return False
+                return str(value).strip().lower() not in (
+                    "", "none", "off", "no", "false", "0", "silent", "disabled"
+                )
+    # A prompt alone is not a reliable indication that audio was requested.
+    # Leave unspecified jobs silent rather than overriding user preferences.
+    return False
+
+
+def find_music_file(plan, scenes):
+    """Use a supplied, existing instrumental audio file when available."""
+    for obj in ([plan] + scenes[:1]):
+        for key in ("music_path", "background_music_path", "audio_path"):
+            value = obj.get(key)
+            if not value:
+                continue
+            candidate = Path(str(value))
+            if not candidate.is_absolute():
+                candidate = ROOT / candidate
+            if candidate.is_file() and candidate.stat().st_size > 0:
+                return candidate
+    return None
+
+
+def add_instrumental_audio(video_path, destination, duration, music_file=None):
+    """Mux a music file or a simple original synthesized ambient soundtrack."""
+    fade_start = max(0.0, duration - min(2.0, duration / 3.0))
+    fade_length = max(0.1, duration - fade_start)
+    if music_file is not None:
+        args = [
+            "-i", str(video_path),
+            "-stream_loop", "-1", "-i", str(music_file),
+            "-filter_complex", (
+                f"[1:a]aresample=44100,volume=0.30,"
+                f"afade=t=in:st=0:d=1,"
+                f"afade=t=out:st={fade_start:.3f}:d={fade_length:.3f}[music]"
+            ),
+            "-map", "0:v:0", "-map", "[music]",
+        ]
+    else:
+        # Original, royalty-free ambient chord generated entirely by FFmpeg.
+        # Three low-volume sine oscillators produce an instrumental pad.
+        graph = (
+            "[1:a]volume=0.055[a1];"
+            "[2:a]volume=0.040[a2];"
+            "[3:a]volume=0.030[a3];"
+            "[a1][a2][a3]amix=inputs=3:duration=longest:normalize=0,"
+            "lowpass=f=1100,"
+            "afade=t=in:st=0:d=1,"
+            f"afade=t=out:st={fade_start:.3f}:d={fade_length:.3f}[music]"
+        )
+        args = [
+            "-i", str(video_path),
+            "-f", "lavfi", "-i", f"sine=frequency=220:sample_rate=44100:duration={duration:.3f}",
+            "-f", "lavfi", "-i", f"sine=frequency=277.18:sample_rate=44100:duration={duration:.3f}",
+            "-f", "lavfi", "-i", f"sine=frequency=329.63:sample_rate=44100:duration={duration:.3f}",
+            "-filter_complex", graph,
+            "-map", "0:v:0", "-map", "[music]",
+        ]
+    args += [
+        "-c:v", "copy", "-c:a", "aac", "-b:a", "128k",
+        "-ar", "44100", "-t", f"{duration:.3f}",
+        "-movflags", "+faststart", str(destination),
+    ]
+    run_ffmpeg(args)
+
+
 def assemble_video(job_id):
     if not re.fullmatch(
         r"[A-Za-z0-9_-]+",
@@ -700,10 +786,19 @@ def assemble_video(job_id):
                 "FFmpeg did not create MP4"
             )
 
-        os.replace(
-            temporary_video,
-            output
-        )
+        if music_requested(plan, scenes):
+            audio_video = temp / "video_with_audio.mp4"
+            music_file = find_music_file(plan, scenes)
+            print("Adding instrumental audio:", music_file or "generated ambient chord", flush=True)
+            add_instrumental_audio(
+                temporary_video, audio_video, total_duration, music_file
+            )
+            if not audio_video.is_file() or audio_video.stat().st_size == 0:
+                raise RuntimeError("Audio mux did not create an MP4")
+            os.replace(audio_video, output)
+        else:
+            print("Music disabled or not requested; preserving silent video", flush=True)
+            os.replace(temporary_video, output)
 
     print()
     print(
