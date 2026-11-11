@@ -1,10 +1,16 @@
+
 # MELODIA AI - AUTOMATIC VIDEO WORKER
-# Step 1336.68 - No-Gemini video assembly test
+# Step 1336.76 - Free-test instrumental audio correction
 # Existing production flow retained; test activated by [FREE TEST] in prompt.
 
 import json
+import math
 import os
+import shutil
+import subprocess
 import tempfile
+import wave
+from array import array
 from pathlib import Path
 from datetime import datetime, timezone
 
@@ -208,10 +214,87 @@ def prepare_free_test(job_id):
     return plan_path, caption_path
 
 
+def free_test_music_enabled(job):
+    """Respect the frontend's explicit music selector in free-test mode."""
+    settings = job.get('settings') or {}
+    mode = str(settings.get('music', 'none')).strip().lower()
+    return mode not in ('none', 'off', 'false', 'no', '')
+
+
+def create_free_test_soundtrack(destination, seconds=30):
+    """Generate an original soft instrumental pad locally; no paid APIs."""
+    sample_rate = 22050
+    total_samples = int(seconds * sample_rate)
+    samples = array('h')
+    # Three gently changing major chords, one per ten-second scene.
+    chords = (
+        (261.63, 329.63, 392.00),
+        (220.00, 261.63, 329.63),
+        (196.00, 246.94, 392.00),
+    )
+    for index in range(total_samples):
+        t = index / sample_rate
+        chord = chords[min(int(t // 10), len(chords) - 1)]
+        # A slow envelope avoids clicks and provides fade-in/out.
+        fade = min(1.0, t / 2.0, (seconds - t) / 3.0)
+        fade = max(0.0, fade)
+        # Gentle modulation makes this a sustained instrumental texture.
+        pulse = 0.82 + 0.18 * math.sin(2 * math.pi * 0.22 * t)
+        tone = sum(
+            math.sin(2 * math.pi * hz * t) +
+            0.13 * math.sin(2 * math.pi * hz * 2 * t)
+            for hz in chord
+        ) / (len(chord) * 1.13)
+        samples.append(int(10500 * fade * pulse * tone))
+    with wave.open(str(destination), 'wb') as audio:
+        audio.setnchannels(1)
+        audio.setsampwidth(2)
+        audio.setframerate(sample_rate)
+        audio.writeframes(samples.tobytes())
+    if not destination.is_file() or destination.stat().st_size < 1000:
+        raise RuntimeError('Local instrumental soundtrack was not created')
+
+
+def mux_free_test_music(silent_video, destination):
+    """Copy rendered video and attach locally generated AAC audio."""
+    ffmpeg = shutil.which('ffmpeg')
+    if not ffmpeg:
+        raise RuntimeError('FFmpeg is required to add free-test music')
+    with tempfile.TemporaryDirectory(prefix='melodia_free_audio_', dir=OUTPUTS) as folder:
+        folder = Path(folder)
+        soundtrack = folder / 'instrumental.wav'
+        combined = folder / 'with_music.mp4'
+        create_free_test_soundtrack(soundtrack)
+        command = [
+            ffmpeg, '-hide_banner', '-loglevel', 'error', '-nostdin', '-y',
+            '-i', str(silent_video), '-i', str(soundtrack),
+            '-map', '0:v:0', '-map', '1:a:0',
+            '-c:v', 'copy', '-c:a', 'aac', '-b:a', '128k',
+            '-t', '30', '-movflags', '+faststart', str(combined),
+        ]
+        result = subprocess.run(command, capture_output=True, text=True)
+        if result.returncode != 0:
+            raise RuntimeError('FFmpeg audio mux failed: ' + result.stderr[-3000:])
+        if not combined.is_file() or combined.stat().st_size == 0:
+            raise RuntimeError('Music-enabled MP4 is missing')
+        # Fail rather than mark a silent video complete.
+        probe = shutil.which('ffprobe')
+        if probe:
+            check = subprocess.run([
+                probe, '-v', 'error', '-select_streams', 'a:0',
+                '-show_entries', 'stream=codec_name',
+                '-of', 'default=noprint_wrappers=1:nokey=1', str(combined),
+            ], capture_output=True, text=True)
+            if check.returncode != 0 or 'aac' not in check.stdout.lower():
+                raise RuntimeError('Audio verification failed: no AAC stream')
+        os.replace(combined, destination)
+
+
 def process_free_test(job_file, job):
     job_id = job['job_id']
     final_video = OUTPUTS / f'{job_id}.mp4'
     if final_video.is_file() and final_video.stat().st_size > 0:
+        # Do not overwrite previous completed test videos.
         finish_job(job_file, job, final_video)
         return
     try:
@@ -224,8 +307,24 @@ def process_free_test(job_file, job):
         job['status'] = 'rendering'
         job['progress'] = 50
         save_job(job_file, job)
-        result = assemble_video(job_id)
-        finish_job(job_file, job, Path(result))
+        if free_test_music_enabled(job):
+            # Assembler writes the usual video-only file. Move it to a
+            # preserved silent master before muxing the soundtrack.
+            rendered = Path(assemble_video(job_id))
+            silent_master = OUTPUTS / f'{job_id}_silent_master.mp4'
+            if not silent_master.exists():
+                os.replace(rendered, silent_master)
+            job['status'] = 'adding_music'
+            job['progress'] = 90
+            save_job(job_file, job)
+            mux_free_test_music(silent_master, final_video)
+            print('FREE TEST: instrumental AAC audio added', flush=True)
+        else:
+            rendered = Path(assemble_video(job_id))
+            if rendered != final_video:
+                raise RuntimeError('Unexpected free-test output path')
+            print('FREE TEST: music disabled by user setting', flush=True)
+        finish_job(job_file, job, final_video)
     except Exception as error:
         job['status'] = 'failed'
         job['error'] = 'Free video assembly test failed: ' + str(error)
@@ -236,7 +335,7 @@ def process_free_test(job_file, job):
 def process_job(job_file, job):
     job_id = job['job_id']
     if is_free_test(job):
-        print('FREE TEST MODE: no Gemini calls, no music API calls', flush=True)
+        print('FREE TEST MODE: no Gemini or paid music API calls', flush=True)
         process_free_test(job_file, job)
         return
 
