@@ -1,6 +1,6 @@
 # MELODIA AI - AUTOMATIC VIDEO WORKER
-# Step 1205 - Optional dynamic instrumental music integration
-# Preserves images, captions, silent masters, completed videos, and resumable jobs.
+# Step 1336.68 - No-Gemini video assembly test
+# Existing production flow retained; test activated by [FREE TEST] in prompt.
 
 import json
 import os
@@ -19,7 +19,8 @@ JOBS = ROOT / 'jobs'
 PLANS = ROOT / 'scene_plans'
 OUTPUTS = ROOT / 'outputs'
 CONTENT = ROOT / 'generated_content'
-for folder in (JOBS, PLANS, OUTPUTS, CONTENT):
+VISUALS = ROOT / 'generated_visuals'
+for folder in (JOBS, PLANS, OUTPUTS, CONTENT, VISUALS):
     folder.mkdir(parents=True, exist_ok=True)
 
 
@@ -48,7 +49,7 @@ def find_pending_jobs():
             if job.get('status') in allowed_statuses:
                 pending.append((job_file, job))
         except (OSError, ValueError) as error:
-            print('Skipping invalid job:', error)
+            print('Skipping invalid job:', error, flush=True)
     return pending
 
 
@@ -70,7 +71,8 @@ def is_quota_error(error):
     message = str(error).lower()
     return any(term in message for term in (
         'zerogpu', 'quota', 'rate limit', 'too many requests',
-        'exceeded your', '429'
+        'exceeded your', '429', '402', 'resource_exhausted',
+        'prepayment credits', 'credits are depleted'
     ))
 
 
@@ -104,11 +106,140 @@ def finish_job(job_file, job, output):
     job['video_path'] = str(output)
     job.pop('error', None)
     save_job(job_file, job)
-    print('VIDEO GENERATION COMPLETE:', output)
+    print('VIDEO GENERATION COMPLETE:', output, flush=True)
+
+
+def is_free_test(job):
+    # Explicit marker only. Ordinary customer prompts remain production jobs.
+    settings = job.get('settings') or {}
+    prompt = str(job.get('prompt') or settings.get('prompt') or '')
+    return '[FREE TEST]' in prompt.upper()
+
+
+def prepare_free_test(job_id):
+    # Generate local images with Pillow; never call Gemini or an image API.
+    from PIL import Image, ImageDraw, ImageFont
+
+    image_dir = VISUALS / job_id
+    image_dir.mkdir(parents=True, exist_ok=True)
+    plan_path = PLANS / f'{job_id}_scenes.json'
+    caption_path = CONTENT / f'{job_id}_captions.json'
+
+    titles = (
+        'A NEW BEGINNING',
+        'FIND YOUR PEACE',
+        'EVERY MOMENT MATTERS'
+    )
+    messages = (
+        'Every sunrise brings new hope.',
+        'Peace begins with a quiet heart.',
+        'Let your light shine today.'
+    )
+    backgrounds = (
+        (32, 75, 125),
+        (28, 105, 91),
+        (112, 66, 118)
+    )
+    scenes = []
+    records = []
+    for index, (title, message, color) in enumerate(
+        zip(titles, messages, backgrounds), start=1
+    ):
+        image_path = image_dir / f'scene_{index:03d}.png'
+        if not image_path.is_file() or image_path.stat().st_size == 0:
+            image = Image.new('RGB', (854, 480), color)
+            draw = ImageDraw.Draw(image)
+            draw.ellipse((595, 60, 765, 230), fill=(246, 202, 118))
+            draw.polygon(
+                [(0, 385), (190, 210), (390, 385)],
+                fill=(20, 48, 69)
+            )
+            draw.polygon(
+                [(210, 400), (500, 175), (854, 400)],
+                fill=(25, 55, 70)
+            )
+            draw.rectangle((0, 398, 854, 480), fill=(18, 37, 55))
+            draw.text((35, 35), 'MELODIA AI - FREE TEST', fill='white')
+            draw.text((35, 65), title, fill='white')
+            image.save(image_path, format='PNG')
+
+        start = float((index - 1) * 10)
+        end = float(index * 10)
+        scenes.append({
+            'scene_number': index,
+            'start_seconds': start,
+            'end_seconds': end,
+            'duration_seconds': 10.0,
+            'image_path': str(image_path.resolve()),
+            'caption_mode': 'single',
+            'primary_language': 'English',
+            'second_language': None
+        })
+        records.append({
+            'scene_number': index,
+            'start_seconds': start,
+            'end_seconds': end,
+            'primary': message,
+            'translated': ''
+        })
+
+    plan = {
+        'job_id': job_id,
+        'aspect_ratio': '16:9',
+        'duration_seconds': 30.0,
+        'generation_status': 'complete',
+        'scenes': scenes
+    }
+    captions = {
+        'job_id': job_id,
+        'caption_mode': 'single',
+        'primary_language': 'English',
+        'second_language': None,
+        'records': records
+    }
+    # Keep existing files if this particular test job is resumed.
+    if not plan_path.exists():
+        plan_path.write_text(json.dumps(plan, indent=2), encoding='utf-8')
+    if not caption_path.exists():
+        caption_path.write_text(
+            json.dumps(captions, ensure_ascii=False, indent=2),
+            encoding='utf-8'
+        )
+    return plan_path, caption_path
+
+
+def process_free_test(job_file, job):
+    job_id = job['job_id']
+    final_video = OUTPUTS / f'{job_id}.mp4'
+    if final_video.is_file() and final_video.stat().st_size > 0:
+        finish_job(job_file, job, final_video)
+        return
+    try:
+        job['status'] = 'preparing'
+        job['progress'] = 10
+        job.pop('error', None)
+        save_job(job_file, job)
+        plan_path, caption_path = prepare_free_test(job_id)
+        print('FREE TEST: local visuals and captions ready:', plan_path, caption_path, flush=True)
+        job['status'] = 'rendering'
+        job['progress'] = 50
+        save_job(job_file, job)
+        result = assemble_video(job_id)
+        finish_job(job_file, job, Path(result))
+    except Exception as error:
+        job['status'] = 'failed'
+        job['error'] = 'Free video assembly test failed: ' + str(error)
+        save_job(job_file, job)
+        print('FREE TEST FAILED:', error, flush=True)
 
 
 def process_job(job_file, job):
     job_id = job['job_id']
+    if is_free_test(job):
+        print('FREE TEST MODE: no Gemini calls, no music API calls', flush=True)
+        process_free_test(job_file, job)
+        return
+
     settings = job.get('settings') or {}
     audio_mode = settings.get('audio', 'none')
     if audio_mode not in ('none', 'music'):
@@ -121,13 +252,8 @@ def process_job(job_file, job):
     print('Current status:', job['status'])
     plan_path = PLANS / f'{job_id}_scenes.json'
     video_path = OUTPUTS / f'{job_id}.mp4'
-    # For music jobs, the assembler's output is a silent master until muxing.
-    # A separate master name prevents an interrupted mux from being mistaken
-    # for a completed video.
     silent_master = OUTPUTS / f'{job_id}_silent_master.mp4'
 
-    # Preserve any previously completed final video. For old jobs, never
-    # overwrite or retrofit audio into their existing MP4s.
     if video_path.is_file() and video_path.stat().st_size > 0:
         finish_job(job_file, job, video_path)
         print('Existing MP4 preserved:', video_path)
@@ -154,8 +280,10 @@ def process_job(job_file, job):
                 job['status'] = 'paused_quota'
                 job['progress'] = 5
                 preserve_image_progress(job, plan_path)
-                job['error'] = ('Image-generation provider quota reached. '
-                                'Generated images preserved; job can resume.')
+                job['error'] = (
+                    'Image-generation provider quota reached. '
+                    'Generated images preserved; job can resume.'
+                )
             else:
                 job['status'] = 'failed'
                 job['error'] = str(error)
@@ -181,8 +309,10 @@ def process_job(job_file, job):
             except Exception as error:
                 if is_quota_error(error):
                     job['status'] = 'paused_quota'
-                    job['error'] = ('Gemini caption quota reached. '
-                                    'Existing scene images preserved; job can resume.')
+                    job['error'] = (
+                        'Gemini caption quota reached. '
+                        'Existing scene images preserved; job can resume.'
+                    )
                 else:
                     job['status'] = 'failed'
                     job['error'] = 'Caption generation failed: ' + str(error)
@@ -202,8 +332,6 @@ def process_job(job_file, job):
             if audio_mode == 'none':
                 finish_job(job_file, job, rendered)
                 return
-            # The assembler writes <job_id>.mp4. Rename that finished silent
-            # file to the durable master before any music processing begins.
             if silent_master.exists():
                 raise RuntimeError('Silent master already exists; refusing overwrite')
             os.replace(rendered, silent_master)
@@ -216,7 +344,6 @@ def process_job(job_file, job):
             return
 
     if audio_mode == 'none':
-        # Reaching this branch would mean an inconsistent job state.
         job['status'] = 'failed'
         job['error'] = 'Silent video was not finalized'
         save_job(job_file, job)
@@ -231,7 +358,6 @@ def process_job(job_file, job):
         job['status'] = 'adding_music'
         job['progress'] = 95
         save_job(job_file, job)
-        # Temporary MP4 in the output directory allows atomic final publish.
         with tempfile.TemporaryDirectory(prefix='melodia_music_', dir=OUTPUTS) as temp_dir:
             temp_output = Path(temp_dir) / 'final.mp4'
             add_music_to_video(silent_master, music_file, temp_output)
