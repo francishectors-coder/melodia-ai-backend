@@ -9,28 +9,35 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Check FFmpeg installation
+      - name: Install FFmpeg
         run: |
-          which ffmpeg
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+
+      - name: Verify FFmpeg installation
+        run: |
+          command -v ffmpeg
           ffmpeg -version
+          command -v ffprobe
 
       - name: Test filter graph loaded from file
         shell: bash
         run: |
-          cat > filters.txt <<'EOF'
-          [0:v]format=yuv420p[out]
-          EOF
+          printf '%s\n' '[0:v]format=yuv420p[out]' > filters.txt
 
           ffmpeg -hide_banner -loglevel error \
-            -f lavfi -i "color=c=blue:s=854x480:r=15:d=3" \
+            -f lavfi \
+            -i "color=c=blue:s=854x480:r=15:d=3" \
             -/filter_complex filters.txt \
             -map "[out]" \
             -t 3 \
             -c:v libx264 \
+            -preset ultrafast \
             -pix_fmt yuv420p \
             -y melodia_linux_test.mp4
 
           test -s melodia_linux_test.mp4
+
           ffprobe -v error \
             -show_entries format=duration \
             -of default=noprint_wrappers=1 \
