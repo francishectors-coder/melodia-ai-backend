@@ -1,5 +1,5 @@
 # MELODIA AI - AUTOMATIC VIDEO WORKER
-# Step 1337.26 - Universal safe-frame scenery; V5 music preserved
+# Step 1337.28 - Full-frame composition with complete foreground objects; V5 music preserved
 # Existing production flow retained; test activated by [FREE TEST] in prompt.
 
 import json
@@ -193,64 +193,78 @@ def prepare_free_test(job_id, job=None):
             rng = random.Random(f'{job_id}:{index}:{theme}')
             image = Image.new('RGB', (854, 480), color)
             draw = ImageDraw.Draw(image)
-            # Circle, square, triangle remain the foundational primitives.
+            # Full-bleed 16:9 composition. Background may fill the edges;
+            # complete foreground objects stay within a 5% safe margin.
             if theme == 'space':
                 for _ in range(65):
-                    x, y = rng.randrange(25, 829), rng.randrange(25, 455)
+                    x, y = rng.randrange(30, 824), rng.randrange(115, 445)
                     r = rng.choice((1, 1, 2, 3))
                     draw.ellipse((x-r, y-r, x+r, y+r), fill=(213, 223, 246))
-                cx, cy = 520 + index*36, 250
-                draw.ellipse((cx-105, cy-105, cx+105, cy+105), fill=(93+index*23, 120, 174))
-                draw.ellipse((cx-55, cy-44, cx-15, cy-4), fill=(114, 148, 197))
-                draw.ellipse((cx+12, cy+28, cx+43, cy+59), fill=(68, 98, 148))
+                cx, cy, radius = 540 + index*35, 280, 95
+                draw.ellipse((cx-radius, cy-radius, cx+radius, cy+radius),
+                             fill=(93+index*23, 120, 174))
+                draw.ellipse((cx-48, cy-40, cx-12, cy-4), fill=(114, 148, 197))
+                draw.ellipse((cx+12, cy+26, cx+43, cy+57), fill=(68, 98, 148))
             elif theme == 'ocean':
+                # Water is a full-frame background; fish remain entirely visible.
                 for band in range(7):
-                    y = 175 + band*45
-                    draw.rectangle((0, y, 854, y+25), fill=(10, 76+band*5, 122+band*4))
-                for n in range(13):
-                    x = 65 + n*55
-                    y = 310 + rng.randrange(90)
-                    draw.polygon(((x,y),(x+23,y-12),(x+23,y+12)), fill=(236, 174, 104))
+                    y = 160 + band*45
+                    draw.rectangle((0, y, 853, min(479, y+25)),
+                                   fill=(10, 76+band*5, 122+band*4))
+                for n in range(11):
+                    x = 65 + n*65
+                    y = 280 + rng.randrange(105)
+                    draw.polygon(((x,y),(x+23,y-12),(x+23,y+12)),
+                                 fill=(236, 174, 104))
                     draw.ellipse((x+21,y-9,x+48,y+9), fill=(236, 174, 104))
-                for n in range(14):
-                    x = rng.randrange(30, 815)
-                    y = rng.randrange(130, 420)
+                for _ in range(14):
+                    x = rng.randrange(45, 801)
+                    y = rng.randrange(155, 420)
                     draw.ellipse((x,y,x+8,y+8), outline=(167, 219, 238), width=2)
             elif theme == 'city':
-                for n in range(12):
-                    x = 45+n*62
-                    h = rng.randrange(110, 300)
-                    draw.rectangle((x, 480-h, x+65, 480), fill=(25, 37, 67))
-                    for wx in range(x+10, x+55, 16):
-                        for wy in range(490-h, 460, 24):
-                            draw.rectangle((wx, wy, wx+7, wy+11), fill=(232, 193, 110))
-                draw.ellipse((640, 52, 740, 152), fill=(249, 211, 150))
+                # Buildings have visible bases, not bottoms clipped at y=480.
+                draw.rectangle((0, 430, 853, 479), fill=(43, 49, 74))
+                for n in range(10):
+                    x = 55 + n*75
+                    h = rng.randrange(120, 260)
+                    top, bottom = 430-h, 430
+                    draw.rectangle((x, top, x+52, bottom), fill=(25, 37, 67))
+                    for wx in range(x+9, x+47, 15):
+                        for wy in range(top+14, bottom-14, 24):
+                            draw.rectangle((wx, wy, wx+7, wy+10),
+                                           fill=(232, 193, 110))
+                draw.ellipse((660, 115, 760, 215), fill=(249, 211, 150))
             elif theme == 'prayer':
-                draw.ellipse((565, 45, 760, 240), fill=(245, 197, 120))
-                draw.polygon(((200, 420),(440, 170),(680, 420)), fill=(49, 49, 77))
-                draw.rectangle((270, 355, 610, 450), fill=(42, 43, 69))
-                draw.rectangle((421, 205, 439, 340), fill=(247, 224, 170))
-                draw.rectangle((391, 239, 469, 255), fill=(247, 224, 170))
+                # Complete church silhouette: roof, walls and base all visible.
+                draw.ellipse((645, 118, 785, 258), fill=(245, 197, 120))
+                draw.polygon(((242, 296), (427, 139), (612, 296)),
+                             fill=(49, 49, 77))
+                draw.rectangle((276, 296, 578, 440), fill=(42, 43, 69))
+                draw.rectangle((406, 182, 424, 271), fill=(247, 224, 170))
+                draw.rectangle((381, 208, 449, 226), fill=(247, 224, 170))
+                # Door and windows make the building visibly complete.
+                draw.rectangle((408, 371, 449, 440), fill=(102, 88, 91))
+                draw.rectangle((319, 329, 351, 364), fill=(245, 197, 120))
+                draw.rectangle((505, 329, 537, 364), fill=(245, 197, 120))
+                draw.line(((250, 441), (605, 441)), fill=(210, 197, 172), width=3)
             else:
-                draw.ellipse((585, 55, 755, 225), fill=(246, 202, 118))
-                draw.polygon(((40, 390),(185, 200),(410, 390)), fill=(24, 64, 77))
-                draw.polygon(((220, 415),(510, 165),(815, 415)), fill=(29, 73, 79))
-                draw.rectangle((0, 405, 854, 480), fill=(22, 65, 72))
+                # Hills are background silhouettes; trees are complete objects.
+                draw.ellipse((655, 122, 775, 242), fill=(246, 202, 118))
+                draw.polygon(((0, 400), (180, 200), (390, 400)), fill=(24, 64, 77))
+                draw.polygon(((230, 412), (510, 175), (853, 412)), fill=(29, 73, 79))
+                draw.rectangle((0, 417, 853, 479), fill=(22, 65, 72))
                 if theme == 'nature':
-                    for n in range(10):
-                        x = 60+n*75
-                        draw.rectangle((x, 355, x+12, 440), fill=(55, 52, 43))
-                        draw.polygon(((x-35, 378),(x+6, 260),(x+48, 378)), fill=(23, 90, 65))
-            # Fit the entire generated illustration into a bounded safe region.
-            # The illustration is never enlarged or cropped. Header and subtitles
-            # have their own space, and no scenery reaches the video edges.
-            safe_canvas = Image.new('RGB', (854, 480), (18, 28, 49))
-            scene_fit = image.resize((710, 290), Image.Resampling.LANCZOS)
-            safe_canvas.paste(scene_fit, (72, 125))
-            safe_draw = ImageDraw.Draw(safe_canvas)
-            safe_draw.text((35, 25), 'MELODIA AI - FREE TEST', fill=(220, 230, 241))
-            safe_draw.text((35, 62), title, fill='white')
-            safe_canvas.save(image_path, format='PNG')
+                    for n in range(9):
+                        x = 62 + n*87
+                        draw.rectangle((x, 345, x+12, 441), fill=(55, 52, 43))
+                        draw.polygon(((x-29, 370), (x+6, 258), (x+41, 370)),
+                                     fill=(23, 90, 65))
+            # Header is overlaid directly on the full-size illustration.
+            # The video assembler handles subtitles separately.
+            draw.rectangle((0, 0, 853, 103), fill=(18, 28, 49))
+            draw.text((35, 25), 'MELODIA AI - FREE TEST', fill=(220, 230, 241))
+            draw.text((35, 62), title, fill='white')
+            image.save(image_path, format='PNG')
 
         start, end = float((index - 1) * 10), float(index * 10)
         scenes.append({
