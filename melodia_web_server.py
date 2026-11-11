@@ -310,15 +310,20 @@ def prepare_video_settings(data):
     # the exact settings expected by the isolated worker test path.
     # It is activated only when the prompt contains [FREE TEST].
     if "[FREE TEST]" in prompt.upper():
+        # Preserve the user's music selection even in the no-Gemini test.
+        selected_music = data.get("music", "peaceful")
+        if selected_music not in MUSIC_MODES:
+            raise ValueError("Invalid background music selection")
+        selected_audio = "music" if selected_music != "none" else "none"
         settings = {
             "prompt": prompt,
             "language": "English",
             "captions": "single",
             "second_language": None,
-            "music": "none",
+            "music": selected_music,
             "duration": 0.5,
             "aspect_ratio": "16:9",
-            "audio": "none"
+            "audio": selected_audio
         }
         error = validate_settings(settings)
         if error:
@@ -329,7 +334,7 @@ def prepare_video_settings(data):
             "subject": "free_test",
             "recommended_style": "test",
             "background": "local_test_images",
-            "audio": "none"
+            "audio": selected_audio
         }
 
     if mode == "default":
