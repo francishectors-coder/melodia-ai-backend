@@ -121,95 +121,156 @@ def is_free_test(job):
     return '[FREE TEST]' in prompt.upper()
 
 
-def prepare_free_test(job_id):
-    # Generate local images with Pillow; never call Gemini or an image API.
-    from PIL import Image, ImageDraw, ImageFont
+def free_test_theme(prompt):
+    """Choose a deterministic, offline geometric scenery theme from prompt words."""
+    import re
+    words = set(re.findall(r"[a-z]+", prompt.lower().replace('[free test]', '')))
+    themes = (
+        ('space', {'space', 'universe', 'planet', 'planets', 'galaxy', 'galaxies',
+                   'moon', 'saturn', 'stars', 'astronomy', 'cosmos', 'nebula'}),
+        ('ocean', {'ocean', 'sea', 'beach', 'underwater', 'coral', 'marine', 'fish', 'island'}),
+        ('city', {'city', 'architecture', 'buildings', 'urban', 'skyscraper', 'street'}),
+        ('prayer', {'prayer', 'church', 'jesus', 'mary', 'christian', 'candle', 'faith'}),
+        ('nature', {'nature', 'forest', 'waterfall', 'mountain', 'mountains', 'river',
+                    'landscape', 'sunrise', 'sunset', 'wildlife', 'trees'}),
+    )
+    scores = [(len(words & keywords), name) for name, keywords in themes]
+    score, name = max(scores, key=lambda entry: entry[0])
+    return name if score else 'inspiration'
 
+
+def prepare_free_test(job_id, job=None):
+    """Create three prompt-sensitive geometric scenes offline; no paid API."""
+    from PIL import Image, ImageDraw
+    import random
+
+    job = job or {}
+    settings = job.get('settings') or {}
+    prompt = str(job.get('prompt') or settings.get('prompt') or '')
+    theme = free_test_theme(prompt)
     image_dir = VISUALS / job_id
     image_dir.mkdir(parents=True, exist_ok=True)
     plan_path = PLANS / f'{job_id}_scenes.json'
     caption_path = CONTENT / f'{job_id}_captions.json'
 
-    titles = (
-        'A NEW BEGINNING',
-        'FIND YOUR PEACE',
-        'EVERY MOMENT MATTERS'
-    )
-    messages = (
-        'Every sunrise brings new hope.',
-        'Peace begins with a quiet heart.',
-        'Let your light shine today.'
-    )
-    backgrounds = (
-        (32, 75, 125),
-        (28, 105, 91),
-        (112, 66, 118)
-    )
-    scenes = []
-    records = []
-    for index, (title, message, color) in enumerate(
-        zip(titles, messages, backgrounds), start=1
-    ):
+    content = {
+        'space': (
+            ('BEYOND OUR WORLD', 'THE RINGS OF SATURN', 'DISTANT GALAXIES'),
+            ('Our universe is full of wonders.', 'Planets travel among the stars.',
+             'Every galaxy holds new mysteries.'),
+            ((11, 16, 47), (22, 14, 67), (12, 31, 73))),
+        'ocean': (
+            ('THE BLUE OCEAN', 'BENEATH THE WAVES', 'A LIVING REEF'),
+            ('The ocean connects our world.', 'Marine life thrives below the surface.',
+             'Coral reefs shelter countless creatures.'),
+            ((13, 79, 119), (8, 62, 98), (7, 89, 113))),
+        'city': (
+            ('CITY LIGHTS', 'URBAN HORIZONS', 'THE CITY AWAKENS'),
+            ('Cities bring people together.', 'Architecture shapes our skylines.',
+             'Every street tells a story.'),
+            ((41, 52, 87), (74, 61, 96), (39, 76, 103))),
+        'prayer': (
+            ('A MOMENT OF PEACE', 'LIGHT OF HOPE', 'FAITH AND GRATITUDE'),
+            ('May peace fill every heart.', 'A quiet light can inspire hope.',
+             'Let gratitude guide our day.'),
+            ((65, 71, 112), (83, 66, 99), (85, 91, 120))),
+        'nature': (
+            ('THE GREAT OUTDOORS', 'MOUNTAINS AND VALLEYS', 'A NEW DAWN'),
+            ('Nature surrounds us with beauty.', 'Every landscape has a story.',
+             'The earth welcomes a new day.'),
+            ((34, 101, 125), (47, 97, 108), (87, 117, 126))),
+        'inspiration': (
+            ('A NEW BEGINNING', 'FIND YOUR PEACE', 'EVERY MOMENT MATTERS'),
+            ('Every new day brings possibility.', 'Small steps lead to change.',
+             'Make this moment count.'),
+            ((32, 75, 125), (28, 105, 91), (112, 66, 118))),
+    }
+    titles, messages, backgrounds = content[theme]
+    scenes, records = [], []
+    for index, (title, message, color) in enumerate(zip(titles, messages, backgrounds), 1):
         image_path = image_dir / f'scene_{index:03d}.png'
         if not image_path.is_file() or image_path.stat().st_size == 0:
+            rng = random.Random(f'{job_id}:{index}:{theme}')
             image = Image.new('RGB', (854, 480), color)
             draw = ImageDraw.Draw(image)
-            draw.ellipse((595, 60, 765, 230), fill=(246, 202, 118))
-            draw.polygon(
-                [(0, 385), (190, 210), (390, 385)],
-                fill=(20, 48, 69)
-            )
-            draw.polygon(
-                [(210, 400), (500, 175), (854, 400)],
-                fill=(25, 55, 70)
-            )
-            draw.rectangle((0, 398, 854, 480), fill=(18, 37, 55))
-            draw.text((35, 35), 'MELODIA AI - FREE TEST', fill='white')
-            draw.text((35, 65), title, fill='white')
+            # Circle, square, triangle remain the foundational primitives.
+            if theme == 'space':
+                for _ in range(65):
+                    x, y = rng.randrange(854), rng.randrange(480)
+                    r = rng.choice((1, 1, 2, 3))
+                    draw.ellipse((x-r, y-r, x+r, y+r), fill=(213, 223, 246))
+                cx, cy = 520 + index*36, 250
+                draw.ellipse((cx-105, cy-105, cx+105, cy+105), fill=(93+index*23, 120, 174))
+                draw.ellipse((cx-55, cy-44, cx-15, cy-4), fill=(114, 148, 197))
+                draw.ellipse((cx+12, cy+28, cx+43, cy+59), fill=(68, 98, 148))
+            elif theme == 'ocean':
+                for band in range(7):
+                    y = 175 + band*45
+                    draw.rectangle((0, y, 854, y+25), fill=(10, 76+band*5, 122+band*4))
+                for n in range(13):
+                    x = 60 + n*62
+                    y = 310 + rng.randrange(90)
+                    draw.polygon(((x,y),(x+23,y-12),(x+23,y+12)), fill=(236, 174, 104))
+                    draw.ellipse((x+21,y-9,x+48,y+9), fill=(236, 174, 104))
+                for n in range(14):
+                    x = rng.randrange(854)
+                    y = rng.randrange(130, 420)
+                    draw.ellipse((x,y,x+8,y+8), outline=(167, 219, 238), width=2)
+            elif theme == 'city':
+                for n in range(12):
+                    x = n*80-10
+                    h = rng.randrange(110, 300)
+                    draw.rectangle((x, 480-h, x+65, 480), fill=(25, 37, 67))
+                    for wx in range(x+10, x+60, 16):
+                        for wy in range(490-h, 460, 24):
+                            draw.rectangle((wx, wy, wx+7, wy+11), fill=(232, 193, 110))
+                draw.ellipse((640, 52, 740, 152), fill=(249, 211, 150))
+            elif theme == 'prayer':
+                draw.ellipse((565, 45, 760, 240), fill=(245, 197, 120))
+                draw.polygon(((200, 420),(440, 170),(680, 420)), fill=(49, 49, 77))
+                draw.rectangle((270, 355, 610, 480), fill=(42, 43, 69))
+                draw.rectangle((421, 205, 439, 340), fill=(247, 224, 170))
+                draw.rectangle((391, 239, 469, 255), fill=(247, 224, 170))
+            else:
+                draw.ellipse((585, 55, 755, 225), fill=(246, 202, 118))
+                draw.polygon(((0, 390),(185, 200),(410, 390)), fill=(24, 64, 77))
+                draw.polygon(((220, 415),(510, 165),(854, 415)), fill=(29, 73, 79))
+                draw.rectangle((0, 405, 854, 480), fill=(22, 65, 72))
+                if theme == 'nature':
+                    for n in range(10):
+                        x = 30+n*91
+                        draw.rectangle((x, 355, x+12, 440), fill=(55, 52, 43))
+                        draw.polygon(((x-35, 378),(x+6, 260),(x+48, 378)), fill=(23, 90, 65))
+            draw.rectangle((0, 0, 854, 102), fill=(18, 28, 49))
+            draw.text((30, 24), 'MELODIA AI - FREE TEST', fill=(220, 230, 241))
+            draw.text((30, 60), title, fill='white')
             image.save(image_path, format='PNG')
 
-        start = float((index - 1) * 10)
-        end = float(index * 10)
+        start, end = float((index - 1) * 10), float(index * 10)
         scenes.append({
-            'scene_number': index,
-            'start_seconds': start,
-            'end_seconds': end,
-            'duration_seconds': 10.0,
-            'image_path': str(image_path.resolve()),
-            'caption_mode': 'single',
-            'primary_language': 'English',
+            'scene_number': index, 'start_seconds': start, 'end_seconds': end,
+            'duration_seconds': 10.0, 'image_path': str(image_path.resolve()),
+            'caption_mode': 'single', 'primary_language': 'English',
             'second_language': None
         })
         records.append({
-            'scene_number': index,
-            'start_seconds': start,
-            'end_seconds': end,
-            'primary': message,
-            'translated': ''
+            'scene_number': index, 'start_seconds': start, 'end_seconds': end,
+            'primary': message, 'translated': ''
         })
 
     plan = {
-        'job_id': job_id,
-        'aspect_ratio': '16:9',
-        'duration_seconds': 30.0,
-        'generation_status': 'complete',
-        'scenes': scenes
+        'job_id': job_id, 'aspect_ratio': '16:9', 'duration_seconds': 30.0,
+        'generation_status': 'complete', 'scenes': scenes
     }
     captions = {
-        'job_id': job_id,
-        'caption_mode': 'single',
-        'primary_language': 'English',
-        'second_language': None,
-        'records': records
+        'job_id': job_id, 'caption_mode': 'single',
+        'primary_language': 'English', 'second_language': None, 'records': records
     }
-    # Keep existing files if this particular test job is resumed.
     if not plan_path.exists():
         plan_path.write_text(json.dumps(plan, indent=2), encoding='utf-8')
     if not caption_path.exists():
-        caption_path.write_text(
-            json.dumps(captions, ensure_ascii=False, indent=2),
-            encoding='utf-8'
-        )
+        caption_path.write_text(json.dumps(captions, ensure_ascii=False, indent=2), encoding='utf-8')
+    print('FREE TEST SCENERY THEME:', theme, flush=True)
     return plan_path, caption_path
 
 
@@ -300,7 +361,7 @@ def process_free_test(job_file, job):
         job['progress'] = 10
         job.pop('error', None)
         save_job(job_file, job)
-        prepare_free_test(job_id)
+        prepare_free_test(job_id, job)
 
         # An old silent file must not be mistaken for a music-enabled result.
         if wants_music and final_video.is_file():
