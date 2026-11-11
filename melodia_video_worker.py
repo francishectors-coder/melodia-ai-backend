@@ -1,5 +1,5 @@
 # MELODIA AI - AUTOMATIC VIDEO WORKER
-# Step 1337.28 - Full-frame composition with complete foreground objects; V5 music preserved
+# Step 1337.29 - Prompt-aware geometric people; full-frame scenery and V5 music preserved
 # Existing production flow retained; test activated by [FREE TEST] in prompt.
 
 import json
@@ -139,6 +139,87 @@ def free_test_theme(prompt):
     return name if score else 'inspiration'
 
 
+def free_test_people_request(prompt):
+    """Recognize a few offline figure layouts; never call a paid image API."""
+    text = prompt.lower()
+    if 'last supper' in text or ('jesus' in text and 'apostles' in text):
+        return 'last_supper'
+    if any(term in text for term in ('people', 'person', 'human', 'family', 'children',
+                                      'crowd', 'walking', 'praying', 'apostles',
+                                      'jesus', 'mary', 'teacher', 'students')):
+        return 'people'
+    return None
+
+
+def draw_geometric_person(draw, x, y, scale=1.0, robe=(100, 117, 157),
+                          skin=(218, 172, 130), halo=False, seated=False):
+    """Draw one complete stylized person; x/y is head centre."""
+    r = int(13 * scale)
+    x, y = int(x), int(y)
+    if halo:
+        hr = int(20 * scale)
+        draw.ellipse((x-hr, y-hr, x+hr, y+hr), outline=(249, 210, 121), width=max(2, int(3*scale)))
+    draw.ellipse((x-r, y-r, x+r, y+r), fill=skin)
+    shoulder = int(22 * scale)
+    torso_top = y + r + int(4 * scale)
+    torso_bottom = torso_top + int((43 if seated else 64) * scale)
+    draw.polygon(((x-shoulder, torso_top+int(9*scale)),
+                  (x+shoulder, torso_top+int(9*scale)),
+                  (x+int(27*scale), torso_bottom),
+                  (x-int(27*scale), torso_bottom)), fill=robe)
+    # Simple arms: keep hands and arms within the person's own footprint.
+    draw.line(((x-shoulder, torso_top+int(14*scale)),
+               (x-int(30*scale), torso_bottom-int(11*scale))),
+              fill=skin, width=max(3, int(5*scale)))
+    draw.line(((x+shoulder, torso_top+int(14*scale)),
+               (x+int(30*scale), torso_bottom-int(11*scale))),
+              fill=skin, width=max(3, int(5*scale)))
+    if not seated:
+        draw.line(((x-int(11*scale), torso_bottom), (x-int(11*scale), torso_bottom+int(28*scale))),
+                  fill=(57, 56, 71), width=max(4, int(9*scale)))
+        draw.line(((x+int(11*scale), torso_bottom), (x+int(11*scale), torso_bottom+int(28*scale))),
+                  fill=(57, 56, 71), width=max(4, int(9*scale)))
+
+
+def draw_last_supper(draw, index):
+    """A complete geometric Last Supper tableau: Jesus and twelve apostles."""
+    # Architectural interior, fully contained in 854 x 480.
+    draw.rectangle((0, 104, 853, 479), fill=(104, 86, 83))
+    draw.rectangle((35, 126, 819, 425), fill=(155, 127, 109), outline=(226, 193, 151), width=5)
+    for x in (95, 707):
+        draw.rectangle((x, 149, x+50, 275), fill=(65, 83, 103), outline=(228, 198, 150), width=6)
+    draw.polygon(((342, 147), (427, 114), (512, 147)), fill=(116, 97, 95))
+    # All thirteen people are inside x=52..802, with a full-width table in front.
+    palette = ((72, 99, 139), (142, 83, 82), (112, 121, 87),
+               (118, 93, 142), (142, 113, 75), (79, 116, 114))
+    xs = [75 + i*58 for i in range(13)]
+    for i, x in enumerate(xs):
+        is_jesus = i == 6
+        head_y = (215 if is_jesus else 228) + (3 if index == 2 and i % 2 else 0)
+        draw_geometric_person(draw, x, head_y, scale=0.82,
+                              robe=(185, 67, 71) if is_jesus else palette[i % len(palette)],
+                              halo=is_jesus, seated=True)
+    draw.polygon(((56, 326), (798, 326), (815, 387), (40, 387)), fill=(226, 197, 155))
+    draw.rectangle((56, 387, 798, 408), fill=(112, 71, 57))
+    draw.rectangle((84, 408, 103, 445), fill=(112, 71, 57))
+    draw.rectangle((749, 408, 768, 445), fill=(112, 71, 57))
+    # Bread and chalices are visible on top of the table.
+    for x in (213, 325, 531, 643):
+        draw.ellipse((x-16, 343, x+16, 354), fill=(245, 215, 152))
+    for x in (280, 427, 574):
+        draw.polygon(((x-9, 338), (x+9, 338), (x+5, 358), (x-5, 358)), fill=(229, 192, 95))
+        draw.line(((x, 357), (x, 364)), fill=(229, 192, 95), width=3)
+    draw.rectangle((0, 445, 853, 479), fill=(89, 74, 71))
+
+
+def draw_people_scene(draw, theme, index):
+    """Add fully visible people to a non-Last-Supper scene."""
+    colors = ((179, 91, 85), (84, 124, 156), (150, 124, 81), (114, 100, 147))
+    for i, x in enumerate((250, 370, 490, 610)):
+        draw_geometric_person(draw, x, 300 + (i % 2)*7, scale=0.95,
+                              robe=colors[(i + index - 1) % len(colors)])
+
+
 def prepare_free_test(job_id, job=None):
     """Create three prompt-sensitive geometric scenes offline; no paid API."""
     from PIL import Image, ImageDraw
@@ -147,7 +228,8 @@ def prepare_free_test(job_id, job=None):
     job = job or {}
     settings = job.get('settings') or {}
     prompt = str(job.get('prompt') or settings.get('prompt') or '')
-    theme = free_test_theme(prompt)
+    people_mode = free_test_people_request(prompt)
+    theme = 'prayer' if people_mode == 'last_supper' else free_test_theme(prompt)
     image_dir = VISUALS / job_id
     image_dir.mkdir(parents=True, exist_ok=True)
     plan_path = PLANS / f'{job_id}_scenes.json'
@@ -186,6 +268,11 @@ def prepare_free_test(job_id, job=None):
             ((32, 75, 125), (28, 105, 91), (112, 66, 118))),
     }
     titles, messages, backgrounds = content[theme]
+    if people_mode == 'last_supper':
+        titles = ('THE LAST SUPPER', 'BREAD AND WINE', 'A SACRED MOMENT')
+        messages = ('Jesus gathers with his twelve apostles.',
+                    'They share bread and wine at the table.',
+                    'A moment of faith and remembrance.')
     scenes, records = [], []
     for index, (title, message, color) in enumerate(zip(titles, messages, backgrounds), 1):
         image_path = image_dir / f'scene_{index:03d}.png'
@@ -195,7 +282,9 @@ def prepare_free_test(job_id, job=None):
             draw = ImageDraw.Draw(image)
             # Full-bleed 16:9 composition. Background may fill the edges;
             # complete foreground objects stay within a 5% safe margin.
-            if theme == 'space':
+            if people_mode == 'last_supper':
+                draw_last_supper(draw, index)
+            elif theme == 'space':
                 for _ in range(65):
                     x, y = rng.randrange(30, 824), rng.randrange(115, 445)
                     r = rng.choice((1, 1, 2, 3))
@@ -259,6 +348,8 @@ def prepare_free_test(job_id, job=None):
                         draw.rectangle((x, 345, x+12, 441), fill=(55, 52, 43))
                         draw.polygon(((x-29, 370), (x+6, 258), (x+41, 370)),
                                      fill=(23, 90, 65))
+            if people_mode == 'people':
+                draw_people_scene(draw, theme, index)
             # Header is overlaid directly on the full-size illustration.
             # The video assembler handles subtitles separately.
             draw.rectangle((0, 0, 853, 103), fill=(18, 28, 49))
