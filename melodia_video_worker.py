@@ -1459,11 +1459,56 @@ def prepare_free_test(job_id, job=None):
     scenes = []
     records = []
 
-    captions = (
-        clean_prompt,
-        f"A closer look: {clean_prompt}",
-        f"The final scene: {clean_prompt}"
+    category = generated[0].get("category", "general")
+action = generated[0].get("action", "standing")
+
+story_captions = {
+    "farm": (
+        "Golden fields stretch across the countryside.",
+        "A farmer works carefully among the ripening crops.",
+        "The harvest brings the rewards of patient work."
+    ),
+    "village": (
+        "A peaceful village welcomes a new day.",
+        "Daily life unfolds among its homes and fields.",
+        "The community shares the beauty of simple living."
+    ),
+    "ocean": (
+        "The vast ocean stretches toward the horizon.",
+        "Life and movement fill the waters.",
+        "The sea reveals its endless natural beauty."
+    ),
+    "space": (
+        "Beyond Earth lies an extraordinary universe.",
+        "Planets and stars fill the vast darkness.",
+        "The wonders of space invite exploration."
+    ),
+    "city": (
+        "A bustling city rises beneath the sky.",
+        "Buildings and streets shape everyday life.",
+        "The city continues its journey into tomorrow."
+    ),
+    "nature": (
+        "Nature reveals a breathtaking landscape.",
+        "Mountains and trees create a peaceful setting.",
+        "The beauty of the natural world endures."
+    ),
+    "religious": (
+        "A moment of faith brings quiet reflection.",
+        "Prayer offers comfort and renewed hope.",
+        "Peace and gratitude remain in the heart."
+    ),
+    "general": (
+        "Every story begins with a new moment.",
+        "The journey unfolds through meaningful experiences.",
+        "A new chapter brings fresh possibilities."
     )
+}
+
+captions = story_captions.get(
+    category,
+    story_captions["general"]
+)
 
     for index, item in enumerate(generated, 1):
         image_path = Path(item["image_path"])
