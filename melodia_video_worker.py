@@ -1404,5 +1404,137 @@ def main():
     print("WORKER FINISHED")
 
 
+
+# STEP 1337.35.3
+# Universal geometric scene engine integration.
+# Preserves the original Last Supper renderer,
+# existing MP4 assembler, captions and V5 music.
+
+_original_prepare_free_test = prepare_free_test
+
+
+def prepare_free_test(job_id, job=None):
+    from melodia_universal_scene_engine import generate_video_scenes
+
+    job = job or {}
+    settings = job.get("settings") or {}
+    prompt = str(
+        job.get("prompt")
+        or settings.get("prompt")
+        or ""
+    )
+
+    # Preserve the working Last Supper scenes.
+    if free_test_people_request(prompt) == "last_supper":
+        return _original_prepare_free_test(job_id, job)
+
+    # All other free-test subjects use the universal engine.
+    clean_prompt = re.sub(
+        r"\[FREE TEST\]",
+        "",
+        prompt,
+        flags=re.IGNORECASE
+    ).strip()
+
+    if not clean_prompt:
+        clean_prompt = "A peaceful landscape"
+
+    image_dir = VISUALS / job_id
+    image_dir.mkdir(parents=True, exist_ok=True)
+
+    plan_path = PLANS / f"{job_id}_scenes.json"
+    caption_path = CONTENT / f"{job_id}_captions.json"
+
+    generated = generate_video_scenes(
+        clean_prompt,
+        image_dir,
+        count=3
+    )
+
+    if len(generated) != 3:
+        raise RuntimeError(
+            "Universal engine must produce three scenes"
+        )
+
+    scenes = []
+    records = []
+
+    captions = (
+        clean_prompt,
+        f"A closer look: {clean_prompt}",
+        f"The final scene: {clean_prompt}"
+    )
+
+    for index, item in enumerate(generated, 1):
+        image_path = Path(item["image_path"])
+
+        if (
+            not image_path.is_file()
+            or image_path.stat().st_size == 0
+        ):
+            raise RuntimeError(
+                f"Missing scene image: {image_path}"
+            )
+
+        start = float((index - 1) * 10)
+        end = float(index * 10)
+
+        scenes.append({
+            "scene_number": index,
+            "start_seconds": start,
+            "end_seconds": end,
+            "duration_seconds": 10.0,
+            "image_path": str(image_path.resolve()),
+            "caption_mode": "single",
+            "primary_language": "English",
+            "second_language": None
+        })
+
+        records.append({
+            "scene_number": index,
+            "start_seconds": start,
+            "end_seconds": end,
+            "primary": captions[index - 1][:240],
+            "translated": ""
+        })
+
+    plan = {
+        "job_id": job_id,
+        "aspect_ratio": "16:9",
+        "duration_seconds": 30.0,
+        "generation_status": "complete",
+        "scenes": scenes
+    }
+
+    caption_data = {
+        "job_id": job_id,
+        "caption_mode": "single",
+        "primary_language": "English",
+        "second_language": None,
+        "records": records
+    }
+
+    plan_path.write_text(
+        json.dumps(plan, indent=2),
+        encoding="utf-8"
+    )
+
+    caption_path.write_text(
+        json.dumps(
+            caption_data,
+            ensure_ascii=False,
+            indent=2
+        ),
+        encoding="utf-8"
+    )
+
+    print(
+        "UNIVERSAL GEOMETRIC ENGINE ACTIVE:",
+        clean_prompt,
+        flush=True
+    )
+
+    return plan_path, caption_path
+
 if __name__ == "__main__":
     main()
