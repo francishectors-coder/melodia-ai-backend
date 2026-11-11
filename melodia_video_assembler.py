@@ -1,10 +1,16 @@
 
 # MELODIA AI - MULTILINGUAL VIDEO ASSEMBLER
-# Step 1160
-# FFmpeg 9.x compatible
-# Primary-language and bilingual captions
-# Preserves existing completed MP4 files
-# Supports landscape and portrait output
+# Step 1336.62
+#
+# Render FFmpeg compatibility correction:
+# Uses -filter_complex_script instead of -/filter_complex.
+#
+# Preserves:
+# - Existing completed MP4 files
+# - Landscape and portrait output
+# - Single-language and bilingual captions
+# - Cinematic crossfade transitions
+# - Existing scene-plan and caption JSON formats
 
 import json
 import math
@@ -13,6 +19,7 @@ import re
 import subprocess
 import tempfile
 from pathlib import Path
+
 
 ROOT = Path(__file__).resolve().parent
 
@@ -51,9 +58,22 @@ def get_video_resolution(aspect_ratio):
 
 def run_ffmpeg(arguments):
     import shutil
-    print("FFmpeg executable:", shutil.which("ffmpeg"))
+
+    executable = shutil.which("ffmpeg")
+
+    print(
+        "FFmpeg executable:",
+        executable,
+        flush=True
+    )
+
+    if not executable:
+        raise RuntimeError(
+            "FFmpeg executable was not found"
+        )
+
     command = [
-        "ffmpeg",
+        executable,
         "-hide_banner",
         "-loglevel", "error",
         "-nostdin",
@@ -63,9 +83,9 @@ def run_ffmpeg(arguments):
     ] + arguments
 
     result = subprocess.run(
-    command,
-    capture_output=True,
-    text=True
+        command,
+        capture_output=True,
+        text=True
     )
 
     if result.returncode != 0:
@@ -73,12 +93,18 @@ def run_ffmpeg(arguments):
             "FFmpeg failed with exit code "
             + str(result.returncode)
             + "\n"
-            + (result.stderr or "No FFmpeg error details available")
+            + (
+                result.stderr
+                or "No FFmpeg error details available"
+            )
         )
 
 
 def ass_time(seconds):
-    seconds = max(0.0, float(seconds))
+    seconds = max(
+        0.0,
+        float(seconds)
+    )
 
     hours = int(seconds // 3600)
     minutes = int((seconds % 3600) // 60)
@@ -100,7 +126,9 @@ def escape_subtitle(value):
     text = text.replace("\n", " ")
 
     return re.sub(
-        r"\s+", " ", text
+        r"\s+",
+        " ",
+        text
     ).strip()
 
 
@@ -210,7 +238,6 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                 + r"\N"
                 + second_line
             )
-
         else:
             caption = primary_line
 
@@ -230,8 +257,8 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 
 def load_captions(job_id, scenes):
     caption_file = (
-        CONTENT /
-        f"{job_id}_captions.json"
+        CONTENT
+        / f"{job_id}_captions.json"
     )
 
     if not caption_file.is_file():
@@ -259,11 +286,13 @@ def load_captions(job_id, scenes):
         )
 
     expected_mode = scenes[0].get(
-        "caption_mode", "single"
+        "caption_mode",
+        "single"
     )
 
     expected_primary = scenes[0].get(
-        "primary_language", "English"
+        "primary_language",
+        "English"
     )
 
     expected_second = (
@@ -388,7 +417,8 @@ def render_video(
     for index in range(count):
         incoming = (
             transitions[index - 1]
-            if index > 0 else 0
+            if index > 0
+            else 0
         )
 
         duration = lengths[index] + incoming
@@ -451,8 +481,8 @@ def render_video(
         dir=OUTPUTS
     ) as temp_dir:
         filter_file = (
-            Path(temp_dir) /
-            "filters.txt"
+            Path(temp_dir)
+            / "filters.txt"
         )
 
         filter_file.write_text(
@@ -460,9 +490,21 @@ def render_video(
             encoding="utf-8"
         )
 
+        print(
+            "FFmpeg filter script:",
+            filter_file,
+            flush=True
+        )
+
+        # Verified on Render:
+        # -filter_complex_script is supported.
+        #
+        # Do not use -/filter_complex because
+        # Render's installed FFmpeg rejects it.
+
         run_ffmpeg(
             arguments + [
-                "-/filter_complex",
+                "-filter_complex_script",
                 str(filter_file),
                 "-map", f"[{current}]",
                 "-an",
@@ -488,8 +530,8 @@ def assemble_video(job_id):
         )
 
     manifest = (
-        PLANS /
-        f"{job_id}_scenes.json"
+        PLANS
+        / f"{job_id}_scenes.json"
     )
 
     if not manifest.is_file():
@@ -555,8 +597,8 @@ def assemble_video(job_id):
     images = get_scene_images(scenes)
 
     output = (
-        OUTPUTS /
-        f"{job_id}.mp4"
+        OUTPUTS
+        / f"{job_id}.mp4"
     )
 
     # Preserve any existing completed video.
@@ -571,7 +613,8 @@ def assemble_video(job_id):
         return output
 
     caption_mode = scenes[0].get(
-        "caption_mode", "single"
+        "caption_mode",
+        "single"
     )
 
     if caption_mode not in (
@@ -607,13 +650,13 @@ def assemble_video(job_id):
         temp = Path(temp_dir)
 
         temporary_video = (
-            temp /
-            "video.mp4"
+            temp
+            / "video.mp4"
         )
 
         subtitle_file = (
-            temp /
-            "captions.ass"
+            temp
+            / "captions.ass"
         )
 
         caption_count = 0
@@ -682,10 +725,12 @@ def main():
     print(
         "MELODIA AI - MULTILINGUAL ASSEMBLER"
     )
+
     print(
         "Use assemble_video(job_id) "
         "from the automatic video worker."
     )
+
     print(
         "No rendering was started."
     )
