@@ -1,5 +1,5 @@
 # MELODIA AI - AUTOMATIC VIDEO WORKER
-# Step 1336.76 - Free-test instrumental audio correction
+# Step 1337.26 - Universal safe-frame scenery; V5 music preserved
 # Existing production flow retained; test activated by [FREE TEST] in prompt.
 
 import json
@@ -196,7 +196,7 @@ def prepare_free_test(job_id, job=None):
             # Circle, square, triangle remain the foundational primitives.
             if theme == 'space':
                 for _ in range(65):
-                    x, y = rng.randrange(854), rng.randrange(480)
+                    x, y = rng.randrange(25, 829), rng.randrange(25, 455)
                     r = rng.choice((1, 1, 2, 3))
                     draw.ellipse((x-r, y-r, x+r, y+r), fill=(213, 223, 246))
                 cx, cy = 520 + index*36, 250
@@ -208,43 +208,49 @@ def prepare_free_test(job_id, job=None):
                     y = 175 + band*45
                     draw.rectangle((0, y, 854, y+25), fill=(10, 76+band*5, 122+band*4))
                 for n in range(13):
-                    x = 60 + n*62
+                    x = 65 + n*55
                     y = 310 + rng.randrange(90)
                     draw.polygon(((x,y),(x+23,y-12),(x+23,y+12)), fill=(236, 174, 104))
                     draw.ellipse((x+21,y-9,x+48,y+9), fill=(236, 174, 104))
                 for n in range(14):
-                    x = rng.randrange(854)
+                    x = rng.randrange(30, 815)
                     y = rng.randrange(130, 420)
                     draw.ellipse((x,y,x+8,y+8), outline=(167, 219, 238), width=2)
             elif theme == 'city':
                 for n in range(12):
-                    x = n*80-10
+                    x = 45+n*62
                     h = rng.randrange(110, 300)
                     draw.rectangle((x, 480-h, x+65, 480), fill=(25, 37, 67))
-                    for wx in range(x+10, x+60, 16):
+                    for wx in range(x+10, x+55, 16):
                         for wy in range(490-h, 460, 24):
                             draw.rectangle((wx, wy, wx+7, wy+11), fill=(232, 193, 110))
                 draw.ellipse((640, 52, 740, 152), fill=(249, 211, 150))
             elif theme == 'prayer':
                 draw.ellipse((565, 45, 760, 240), fill=(245, 197, 120))
                 draw.polygon(((200, 420),(440, 170),(680, 420)), fill=(49, 49, 77))
-                draw.rectangle((270, 355, 610, 480), fill=(42, 43, 69))
+                draw.rectangle((270, 355, 610, 450), fill=(42, 43, 69))
                 draw.rectangle((421, 205, 439, 340), fill=(247, 224, 170))
                 draw.rectangle((391, 239, 469, 255), fill=(247, 224, 170))
             else:
                 draw.ellipse((585, 55, 755, 225), fill=(246, 202, 118))
-                draw.polygon(((0, 390),(185, 200),(410, 390)), fill=(24, 64, 77))
-                draw.polygon(((220, 415),(510, 165),(854, 415)), fill=(29, 73, 79))
+                draw.polygon(((40, 390),(185, 200),(410, 390)), fill=(24, 64, 77))
+                draw.polygon(((220, 415),(510, 165),(815, 415)), fill=(29, 73, 79))
                 draw.rectangle((0, 405, 854, 480), fill=(22, 65, 72))
                 if theme == 'nature':
                     for n in range(10):
-                        x = 30+n*91
+                        x = 60+n*75
                         draw.rectangle((x, 355, x+12, 440), fill=(55, 52, 43))
                         draw.polygon(((x-35, 378),(x+6, 260),(x+48, 378)), fill=(23, 90, 65))
-            draw.rectangle((0, 0, 854, 102), fill=(18, 28, 49))
-            draw.text((30, 24), 'MELODIA AI - FREE TEST', fill=(220, 230, 241))
-            draw.text((30, 60), title, fill='white')
-            image.save(image_path, format='PNG')
+            # Fit the entire generated illustration into a bounded safe region.
+            # The illustration is never enlarged or cropped. Header and subtitles
+            # have their own space, and no scenery reaches the video edges.
+            safe_canvas = Image.new('RGB', (854, 480), (18, 28, 49))
+            scene_fit = image.resize((710, 290), Image.Resampling.LANCZOS)
+            safe_canvas.paste(scene_fit, (72, 125))
+            safe_draw = ImageDraw.Draw(safe_canvas)
+            safe_draw.text((35, 25), 'MELODIA AI - FREE TEST', fill=(220, 230, 241))
+            safe_draw.text((35, 62), title, fill='white')
+            safe_canvas.save(image_path, format='PNG')
 
         start, end = float((index - 1) * 10), float(index * 10)
         scenes.append({
