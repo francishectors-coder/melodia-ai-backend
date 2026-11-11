@@ -1,5 +1,5 @@
 # MELODIA AI - AUTOMATIC VIDEO WORKER
-# Step 1337.29 - Prompt-aware geometric people; full-frame scenery and V5 music preserved
+# Step 1337.31 - Three distinct Last Supper camera compositions; V5 music preserved
 # Existing production flow retained; test activated by [FREE TEST] in prompt.
 
 import json
@@ -182,34 +182,91 @@ def draw_geometric_person(draw, x, y, scale=1.0, robe=(100, 117, 157),
 
 
 def draw_last_supper(draw, index):
-    """A complete geometric Last Supper tableau: Jesus and twelve apostles."""
-    # Architectural interior, fully contained in 854 x 480.
-    draw.rectangle((0, 104, 853, 479), fill=(104, 86, 83))
-    draw.rectangle((35, 126, 819, 425), fill=(155, 127, 109), outline=(226, 193, 151), width=5)
-    for x in (95, 707):
-        draw.rectangle((x, 149, x+50, 275), fill=(65, 83, 103), outline=(228, 198, 150), width=6)
-    draw.polygon(((342, 147), (427, 114), (512, 147)), fill=(116, 97, 95))
-    # All thirteen people are inside x=52..802, with a full-width table in front.
+    """Three genuinely different, full-frame biblical compositions (854 x 480)."""
     palette = ((72, 99, 139), (142, 83, 82), (112, 121, 87),
                (118, 93, 142), (142, 113, 75), (79, 116, 114))
-    xs = [75 + i*58 for i in range(13)]
-    for i, x in enumerate(xs):
-        is_jesus = i == 6
-        head_y = (215 if is_jesus else 228) + (3 if index == 2 and i % 2 else 0)
-        draw_geometric_person(draw, x, head_y, scale=0.82,
-                              robe=(185, 67, 71) if is_jesus else palette[i % len(palette)],
-                              halo=is_jesus, seated=True)
-    draw.polygon(((56, 326), (798, 326), (815, 387), (40, 387)), fill=(226, 197, 155))
-    draw.rectangle((56, 387, 798, 408), fill=(112, 71, 57))
-    draw.rectangle((84, 408, 103, 445), fill=(112, 71, 57))
-    draw.rectangle((749, 408, 768, 445), fill=(112, 71, 57))
-    # Bread and chalices are visible on top of the table.
-    for x in (213, 325, 531, 643):
-        draw.ellipse((x-16, 343, x+16, 354), fill=(245, 215, 152))
-    for x in (280, 427, 574):
-        draw.polygon(((x-9, 338), (x+9, 338), (x+5, 358), (x-5, 358)), fill=(229, 192, 95))
-        draw.line(((x, 357), (x, 364)), fill=(229, 192, 95), width=3)
-    draw.rectangle((0, 445, 853, 479), fill=(89, 74, 71))
+
+    if index == 1:
+        # WIDE SHOT: all twelve apostles and Jesus, entire table and room.
+        draw.rectangle((0, 104, 853, 479), fill=(104, 86, 83))
+        draw.rectangle((35, 126, 819, 425), fill=(155, 127, 109),
+                       outline=(226, 193, 151), width=5)
+        for x in (95, 707):
+            draw.rectangle((x, 149, x+50, 275), fill=(65, 83, 103),
+                           outline=(228, 198, 150), width=6)
+        draw.polygon(((342, 147), (427, 114), (512, 147)), fill=(116, 97, 95))
+        for i in range(13):
+            x = 75 + i*58
+            is_jesus = i == 6
+            draw_geometric_person(draw, x, 215 if is_jesus else 228,
+                                  scale=0.82,
+                                  robe=(185, 67, 71) if is_jesus else palette[i % 6],
+                                  halo=is_jesus, seated=True)
+        draw.polygon(((56, 326), (798, 326), (815, 387), (40, 387)),
+                     fill=(226, 197, 155))
+        draw.rectangle((56, 387, 798, 408), fill=(112, 71, 57))
+        for x in (84, 749):
+            draw.rectangle((x, 408, x+19, 445), fill=(112, 71, 57))
+        for x in (213, 325, 531, 643):
+            draw.ellipse((x-16, 343, x+16, 354), fill=(245, 215, 152))
+        for x in (280, 427, 574):
+            draw.polygon(((x-9, 338), (x+9, 338), (x+5, 358), (x-5, 358)),
+                         fill=(229, 192, 95))
+        draw.rectangle((0, 445, 853, 479), fill=(89, 74, 71))
+
+    elif index == 2:
+        # MEDIUM SHOT: Jesus blesses bread and wine; apostles on both sides.
+        # Change viewpoint, backdrop, figure sizes and arrangement.
+        draw.rectangle((0, 104, 853, 479), fill=(88, 72, 74))
+        draw.rectangle((44, 119, 810, 431), fill=(174, 139, 111),
+                       outline=(225, 189, 139), width=7)
+        draw.polygon(((305, 120), (427, 162), (549, 120)), fill=(109, 82, 76))
+        draw.rectangle((345, 161, 509, 297), fill=(71, 87, 106),
+                       outline=(226, 195, 143), width=8)
+        # Three apostles to either side, distinctly larger than in scene 1.
+        for i, x in enumerate((105, 202, 299, 555, 652, 749)):
+            draw_geometric_person(draw, x, 240 + (i % 2)*9, scale=1.12,
+                                  robe=palette[(i+2) % 6], seated=True)
+        draw_geometric_person(draw, 427, 201, scale=1.55,
+                              robe=(180, 58, 68), halo=True, seated=True)
+        draw.polygon(((54, 358), (800, 358), (822, 420), (32, 420)),
+                     fill=(234, 199, 150))
+        draw.rectangle((50, 420, 804, 441), fill=(104, 64, 52))
+        # Hands reach toward the bread; bread and chalice are central.
+        draw.line(((382, 304), (411, 351)), fill=(220, 172, 129), width=12)
+        draw.line(((473, 304), (443, 351)), fill=(220, 172, 129), width=12)
+        draw.ellipse((396, 362, 458, 382), fill=(247, 216, 153),
+                     outline=(184, 131, 74), width=3)
+        draw.polygon(((496, 360), (525, 360), (520, 386), (502, 386)),
+                     fill=(227, 190, 88))
+        draw.line(((511, 385), (511, 399)), fill=(227, 190, 88), width=4)
+        draw.rectangle((0, 442, 853, 479), fill=(88, 72, 74))
+
+    else:
+        # CLOSE SHOT: Jesus speaks to apostles; different framing and gestures.
+        draw.rectangle((0, 104, 853, 479), fill=(63, 78, 94))
+        draw.rectangle((35, 121, 819, 439), fill=(126, 106, 100),
+                       outline=(213, 183, 138), width=7)
+        # Arched window and evening sky distinguish this view.
+        draw.ellipse((326, 130, 528, 330), fill=(232, 184, 122))
+        draw.rectangle((326, 230, 528, 330), fill=(232, 184, 122))
+        draw.rectangle((350, 155, 504, 325), fill=(91, 109, 132))
+        draw.line(((427, 155), (427, 325)), fill=(224, 193, 149), width=7)
+        # Large central Jesus with four listeners, rather than the wide tableau.
+        for i, (x, y) in enumerate(((115, 255), (245, 273),
+                                     (609, 273), (739, 255))):
+            draw_geometric_person(draw, x, y, scale=1.28,
+                                  robe=palette[(i+3) % 6], seated=True)
+        draw_geometric_person(draw, 427, 196, scale=2.0,
+                              robe=(186, 65, 75), halo=True, seated=True)
+        # Raised hand signals speaking/blessing, with a foreground table.
+        draw.line(((482, 300), (548, 254)), fill=(220, 172, 129), width=13)
+        draw.ellipse((538, 240, 558, 261), fill=(220, 172, 129))
+        draw.polygon(((65, 395), (789, 395), (809, 435), (45, 435)),
+                     fill=(222, 187, 145))
+        draw.ellipse((392, 400, 461, 422), fill=(246, 215, 150))
+        draw.rectangle((0, 441, 853, 479), fill=(75, 65, 68))
+
 
 
 def draw_people_scene(draw, theme, index):
