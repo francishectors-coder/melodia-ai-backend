@@ -522,11 +522,25 @@ def render_video(
 
 
 def music_requested(plan, scenes):
-    """Respect explicit music settings; do not add music to silent jobs."""
-    settings = [plan]
-    if scenes:
-        settings.append(scenes[0])
-    for settings_obj in settings:
+    """Use the actual web-job settings first; fall back to scene-plan flags."""
+    job_id = plan.get("job_id")
+    job_file = ROOT / "jobs" / f"{job_id}.json"
+    if job_id and job_file.is_file():
+        job = json.loads(job_file.read_text(encoding="utf-8"))
+        settings = job.get("settings") or {}
+        if "music" in settings:
+            value = settings["music"]
+            enabled = str(value).strip().lower() not in (
+                "", "none", "off", "no", "false", "0", "silent", "disabled"
+            )
+            print("Music setting from job:", repr(value), "enabled:", enabled, flush=True)
+            return enabled
+        if "audio" in settings:
+            value = str(settings["audio"]).strip().lower()
+            enabled = value in ("music", "on", "true", "yes", "1")
+            print("Legacy audio setting:", repr(value), "enabled:", enabled, flush=True)
+            return enabled
+    for settings_obj in ([plan] + scenes[:1]):
         for key in ("music_enabled", "background_music_enabled", "include_music"):
             if key in settings_obj:
                 value = settings_obj[key]
@@ -538,13 +552,10 @@ def music_requested(plan, scenes):
                 value = settings_obj[key]
                 if isinstance(value, bool):
                     return value
-                if value is None:
-                    return False
-                return str(value).strip().lower() not in (
+                return str(value or "").strip().lower() not in (
                     "", "none", "off", "no", "false", "0", "silent", "disabled"
                 )
-    # A prompt alone is not a reliable indication that audio was requested.
-    # Leave unspecified jobs silent rather than overriding user preferences.
+    print("Music setting absent from job and scene plan", flush=True)
     return False
 
 
@@ -789,6 +800,13 @@ def assemble_video(job_id):
         if music_requested(plan, scenes):
             audio_video = temp / "video_with_audio.mp4"
             music_file = find_music_file(plan, scenes)
+            if music_file is None:
+                try:
+                    from melodia_v5_video_bridge import generate_job_soundtrack
+                    print("Calling MELODIA V5 music engine", flush=True)
+                    music_file = generate_job_soundtrack(job_id)
+                except Exception as exc:
+                    print("V5 music unavailable; using built-in instrumental fallback:", repr(exc), flush=True)
             print("Adding instrumental audio:", music_file or "generated ambient chord", flush=True)
             add_instrumental_audio(
                 temporary_video, audio_video, total_duration, music_file
