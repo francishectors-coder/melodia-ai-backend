@@ -1,0 +1,39 @@
+
+name: MELODIA AI - Linux FFmpeg Test
+
+on:
+  workflow_dispatch:
+
+jobs:
+  ffmpeg-test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check FFmpeg installation
+        run: |
+          which ffmpeg
+          ffmpeg -version
+
+      - name: Test filter graph loaded from file
+        shell: bash
+        run: |
+          cat > filters.txt <<'EOF'
+          [0:v]format=yuv420p[out]
+          EOF
+
+          ffmpeg -hide_banner -loglevel error \
+            -f lavfi -i "color=c=blue:s=854x480:r=15:d=3" \
+            -/filter_complex filters.txt \
+            -map "[out]" \
+            -t 3 \
+            -c:v libx264 \
+            -pix_fmt yuv420p \
+            -y melodia_linux_test.mp4
+
+          test -s melodia_linux_test.mp4
+          ffprobe -v error \
+            -show_entries format=duration \
+            -of default=noprint_wrappers=1 \
+            melodia_linux_test.mp4
+
+          echo "MELODIA Linux FFmpeg test PASSED"
