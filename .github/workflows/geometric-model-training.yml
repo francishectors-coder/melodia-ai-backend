@@ -8,6 +8,7 @@ on:
     paths:
       - "melodia_geometric_training.py"
       - "melodia_geometric_model_trainer.py"
+      - "melodia_geometric_generalization_test.py"
       - ".github/workflows/geometric-model-training.yml"
 
   workflow_dispatch:
@@ -38,6 +39,7 @@ jobs:
         run: |
           python -m py_compile melodia_geometric_training.py
           python -m py_compile melodia_geometric_model_trainer.py
+          python -m py_compile melodia_geometric_generalization_test.py
 
       - name: Generate training and evaluation datasets
         run: |
@@ -56,14 +58,14 @@ jobs:
             --learning-rate 0.03 \
             --seed 1337
 
-      - name: Verify model and evaluation
+      - name: Verify trained model
         run: |
           python - <<'PY'
           import json
+          import math
           from pathlib import Path
 
           folder = Path("melodia_model_output")
-
           model_file = folder / "model.json"
           report_file = folder / "training_report.json"
 
@@ -86,15 +88,50 @@ jobs:
 
           accuracy = report["final_accuracy"]
 
-          print("Baseline accuracy:", report["baseline_accuracy"])
-          print("Final accuracy:", accuracy)
-
+          assert math.isfinite(accuracy)
           assert 0.0 <= accuracy <= 1.0
-          assert accuracy >= 0.80, (
-              "Model accuracy below initial 80% target"
+          assert accuracy >= 0.80
+
+          print("Training evaluation accuracy:", accuracy)
+          print("TRAINED MODEL VALIDATION PASSED")
+          PY
+
+      - name: Test unfamiliar language descriptions
+        run: |
+          python melodia_geometric_generalization_test.py \
+            --model melodia_model_output/model.json \
+            --output melodia_generalization_output
+
+      - name: Verify generalization report
+        run: |
+          python - <<'PY'
+          import json
+          import math
+          from pathlib import Path
+
+          report_file = Path(
+              "melodia_generalization_output/generalization_report.json"
           )
 
-          print("MELODIA NEURAL TRAINING VALIDATION PASSED")
+          assert report_file.is_file()
+
+          report = json.loads(
+              report_file.read_text(encoding="utf-8")
+          )
+
+          assert report["total"] == 25
+          assert len(report["results"]) == 25
+          assert 0 <= report["correct"] <= 25
+
+          accuracy = report["accuracy"]
+
+          assert math.isfinite(accuracy)
+          assert 0.0 <= accuracy <= 1.0
+
+          print("GENERALIZATION TEST COMPLETED")
+          print("Correct:", report["correct"])
+          print("Total:", report["total"])
+          print("Generalization accuracy:", f"{accuracy:.2%}")
           PY
 
       - name: Save trained model and evaluation report
@@ -106,9 +143,19 @@ jobs:
           retention-days: 30
           if-no-files-found: warn
 
-      - name: Training summary
+      - name: Save language generalization results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: melodia-language-generalization-results
+          path: melodia_generalization_output/
+          retention-days: 30
+          if-no-files-found: warn
+
+      - name: Training and generalization summary
         if: success()
         run: |
           echo "## MELODIA Geometric Intelligence" >> "$GITHUB_STEP_SUMMARY"
-          echo "Neural training completed successfully." >> "$GITHUB_STEP_SUMMARY"
-          echo "Model weights and evaluation report saved." >> "$GITHUB_STEP_SUMMARY"
+          echo "Neural training completed." >> "$GITHUB_STEP_SUMMARY"
+          echo "Language generalization test completed." >> "$GITHUB_STEP_SUMMARY"
+          echo "Model and evaluation reports uploaded." >> "$GITHUB_STEP_SUMMARY"
