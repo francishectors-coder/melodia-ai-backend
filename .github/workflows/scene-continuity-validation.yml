@@ -1,0 +1,318 @@
+
+name: MELODIA AI - Scene Continuity Validation
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - "melodia_scene_continuity_engine.py"
+      - ".github/workflows/scene-continuity-validation.yml"
+
+jobs:
+  validate-continuity:
+    name: Validate MELODIA V2.0
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Run continuity validation
+        shell: bash
+        run: |
+          python - <<'PY'
+          import copy
+          import json
+          import subprocess
+          import sys
+          from pathlib import Path
+
+          from melodia_scene_continuity_engine import (
+              VERSION,
+              DEPTHS,
+              plan_continuity,
+          )
+
+          output = Path("melodia_scene_continuity_validation")
+          output.mkdir(parents=True, exist_ok=True)
+          results = []
+
+          def check(condition, message):
+              if not condition:
+                  raise AssertionError(message)
+
+          def test(name, function):
+              try:
+                  function()
+                  results.append({
+                      "test": name,
+                      "status": "pass",
+                  })
+                  print("PASS:", name)
+              except Exception as exc:
+                  results.append({
+                      "test": name,
+                      "status": "fail",
+                      "error": str(exc),
+                  })
+                  print("FAIL:", name, str(exc))
+
+          def obj(identity, x=0.5, y=0.5,
+                  depth="middle", category="tree"):
+              return {
+                  "id": identity,
+                  "category": category,
+                  "center": {"x": x, "y": y},
+                  "depth": depth,
+              }
+
+          def sample():
+              return [
+                  {"objects": [
+                      obj("tree", 0.2, 0.5, "background"),
+                      obj("house", 0.7, 0.5, "middle"),
+                  ]},
+                  {"objects": [
+                      obj("tree", 0.3, 0.5, "foreground"),
+                      obj("flower", 0.8, 0.6),
+                  ]},
+                  {"objects": [
+                      obj("tree", 0.4, 0.5, "foreground"),
+                  ]},
+              ]
+
+          def rejects(scenes):
+              try:
+                  plan_continuity(scenes)
+              except ValueError:
+                  return
+              raise AssertionError("Expected ValueError")
+
+          def basic():
+              result = plan_continuity(sample())
+              check(result["version"] == VERSION, "Version")
+              check(result["scene_count"] == 3, "Count")
+
+          test("basic_generation", basic)
+
+          def tracks():
+              result = plan_continuity(sample())
+              check(len(result["tracks"]["tree"]) == 3,
+                    "Tree tracking")
+
+          test("persistent_identity", tracks)
+
+          def transitions():
+              result = plan_continuity(sample())
+              check(len(result["transitions"]) == 2,
+                    "Transition count")
+
+          test("transition_count", transitions)
+
+          def entering():
+              result = plan_continuity(sample())
+              check(
+                  result["transitions"][0]["entering"]
+                  == ["flower"],
+                  "Entering object",
+              )
+
+          test("entering_objects", entering)
+
+          def exiting():
+              result = plan_continuity(sample())
+              check(
+                  result["transitions"][0]["exiting"]
+                  == ["house"],
+                  "Exiting object",
+              )
+
+          test("exiting_objects", exiting)
+
+          def movement():
+              result = plan_continuity(sample())
+              move = result["transitions"][0]["movements"][0]
+              check(move["continuity_id"] == "tree",
+                    "Movement identity")
+              check(move["position_change"]["dx"] == 0.1,
+                    "Movement delta")
+
+          test("movement_tracking", movement)
+
+          def depth():
+              result = plan_continuity(sample())
+              move = result["transitions"][0]["movements"][0]
+              check(move["depth_changed"], "Depth change")
+              check(move["depth_to"] == "foreground",
+                    "Depth destination")
+
+          test("depth_continuity", depth)
+
+          def crossfade():
+              result = plan_continuity(sample())
+              check(
+                  result["transitions"][0]
+                  ["suggested_transition"] == "crossfade",
+                  "Crossfade selection",
+              )
+
+          test("persistent_crossfade", crossfade)
+
+          def fade_black():
+              scenes = [
+                  {"objects": [obj("tree")]},
+                  {"objects": [obj("house")]},
+              ]
+              result = plan_continuity(scenes)
+              check(
+                  result["transitions"][0]
+                  ["suggested_transition"]
+                  == "fade_through_black",
+                  "Fade-through-black selection",
+              )
+
+          test("independent_scene_transition", fade_black)
+
+          def reproducible():
+              scenes = sample()
+              first = plan_continuity(scenes, seed=77)
+              second = plan_continuity(scenes, seed=77)
+              check(first == second, "Reproducibility")
+
+          test("seed_reproducibility", reproducible)
+
+          def immutable():
+              scenes = sample()
+              original = copy.deepcopy(scenes)
+              plan_continuity(scenes)
+              check(scenes == original, "Input mutation")
+
+          test("source_immutability", immutable)
+
+          test("reject_empty_scenes",
+               lambda: rejects([]))
+
+          test("reject_invalid_scene",
+               lambda: rejects([{}]))
+
+          test("reject_duplicate_ids",
+               lambda: rejects([
+                   {"objects": [obj("tree"), obj("tree")]}
+               ]))
+
+          test("reject_invalid_depth",
+               lambda: rejects([
+                   {"objects": [obj("tree", depth="invalid")]}
+               ]))
+
+          test("reject_invalid_center",
+               lambda: rejects([
+                   {"objects": [obj("tree", x=5.0)]}
+               ]))
+
+          def identity_override():
+              scenes = [
+                  {"objects": [
+                      dict(obj("tree_1"), continuity_id="hero")
+                  ]},
+                  {"objects": [
+                      dict(obj("tree_2"), continuity_id="hero")
+                  ]},
+              ]
+              result = plan_continuity(scenes)
+              check(len(result["tracks"]["hero"]) == 2,
+                    "Continuity override")
+
+          test("explicit_continuity_identity",
+               identity_override)
+
+          def duplicate_identity():
+              scenes = [{"objects": [
+                  dict(obj("a"), continuity_id="same"),
+                  dict(obj("b"), continuity_id="same"),
+              ]}]
+              rejects(scenes)
+
+          test("reject_duplicate_continuity_identity",
+               duplicate_identity)
+
+          def category_change():
+              scenes = [
+                  {"objects": [obj("hero", category="tree")]},
+                  {"objects": [obj("hero", category="house")]},
+              ]
+              result = plan_continuity(scenes)
+              check(
+                  result["transitions"][0]
+                  ["movements"][0]["category_changed"],
+                  "Category change not detected",
+              )
+
+          test("category_change_detection",
+               category_change)
+
+          def cli():
+              input_file = output / "input.json"
+              result_file = output / "continuity.json"
+              input_file.write_text(
+                  json.dumps({"scenes": sample()}),
+                  encoding="utf-8",
+              )
+              subprocess.run([
+                  sys.executable,
+                  "melodia_scene_continuity_engine.py",
+                  "--input", str(input_file),
+                  "--output", str(result_file),
+              ], check=True)
+              result = json.loads(
+                  result_file.read_text(encoding="utf-8")
+              )
+              check(result["scene_count"] == 3,
+                    "CLI scene count")
+
+          test("command_line_export", cli)
+
+          report = {
+              "project": "MELODIA AI",
+              "version": VERSION,
+              "suite": "scene_continuity_validation",
+              "total_tests": len(results),
+              "passed": sum(
+                  r["status"] == "pass" for r in results
+              ),
+              "failed": sum(
+                  r["status"] == "fail" for r in results
+              ),
+              "results": results,
+          }
+
+          (output / "validation_report.json").write_text(
+              json.dumps(report, indent=2),
+              encoding="utf-8",
+          )
+
+          print(json.dumps({
+              "total": report["total_tests"],
+              "passed": report["passed"],
+              "failed": report["failed"],
+          }, indent=2))
+
+          if report["failed"]:
+              sys.exit(1)
+          PY
+
+      - name: Upload validation artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: melodia-scene-continuity-validation
+          path: melodia_scene_continuity_validation/
+          if-no-files-found: warn
+          retention-days: 30
