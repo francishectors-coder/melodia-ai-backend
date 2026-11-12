@@ -1,16 +1,17 @@
 
-"""MELODIA AI - Component Relationship Learner V1.2.
+"""MELODIA AI - Component Relationship Learner V1.3.
 
-Learns component relationships from structured examples.
-Preserves normalized geometry and adds automatic SVG canvas fitting.
+Learns component geometry, parent-relative offsets, and
+example-based variations. Renders fitted SVG previews.
 
-Standard library only.
-Independent of the production video generator.
+Standard library only. Experimental component.
+Does not modify the production video generator.
 """
 
 import argparse
 import json
 import math
+import random
 from collections import Counter, defaultdict
 from pathlib import Path
 import xml.etree.ElementTree as ET
@@ -43,8 +44,6 @@ def parse_sample(sample):
 
 
 def choose_tree(sample):
-    """Construct a geometric parent-child attachment tree."""
-
     root = max(
         sample,
         key=lambda role: (
@@ -82,7 +81,6 @@ def choose_tree(sample):
                 )
 
         _, child, parent = min(candidates)
-
         parents[child] = parent
         attached.add(child)
 
@@ -137,7 +135,6 @@ def train(examples):
                     )
 
         root, parents = choose_tree(parsed[0])
-
         observations = defaultdict(list)
 
         for sample in parsed:
@@ -182,6 +179,24 @@ def train(examples):
                     6,
                 )
 
+            average = {
+                key: mean(key)
+                for key in (
+                    "dx", "dy", "width", "height"
+                )
+            }
+
+            deviations = []
+
+            for item in obs:
+                deviations.append({
+                    key: round(
+                        item[key] - average[key],
+                        6
+                    )
+                    for key in average
+                })
+
             parts.append({
                 "role": role,
                 "parent": parents.get(role),
@@ -193,10 +208,8 @@ def train(examples):
                     item["color"]
                     for item in obs
                 ).most_common(1)[0][0],
-                "dx": mean("dx"),
-                "dy": mean("dy"),
-                "width": mean("width"),
-                "height": mean("height"),
+                **average,
+                "deviations": deviations,
                 "overlap_frequency": mean(
                     "overlap"
                 ),
@@ -211,12 +224,31 @@ def train(examples):
     return model
 
 
-def reconstruct(category, model, scale=1.0):
-    """Reconstruct using parent-relative offsets."""
+def reconstruct(
+    category,
+    model,
+    scale=1.0,
+    variation=0.0,
+    seed=1337,
+):
+    """Generate geometry with coherent sampled deviations.
+
+    variation=0 reproduces the averaged V1.2 layout.
+    variation=1 selects a training example's geometric
+    deviations, preserving its component relationships.
+    """
 
     if not math.isfinite(scale) or scale <= 0:
         raise ValueError(
             "Scale must be positive and finite"
+        )
+
+    if (
+        not math.isfinite(variation)
+        or not 0 <= variation <= 1
+    ):
+        raise ValueError(
+            "Variation must be between 0 and 1"
         )
 
     if category not in model:
@@ -230,11 +262,26 @@ def reconstruct(category, model, scale=1.0):
         }
 
     learned = model[category]
+    rng = random.Random(seed)
+
+    sample_index = rng.randrange(
+        learned["training_examples"]
+    )
 
     pending = {
         part["role"]: part
         for part in learned["parts"]
     }
+
+    def geometry(part, key):
+        deviation = part["deviations"][
+            sample_index
+        ][key]
+
+        return (
+            part[key]
+            + variation * deviation
+        )
 
     placed = {}
     components = []
@@ -242,8 +289,8 @@ def reconstruct(category, model, scale=1.0):
     root_part = pending[learned["root"]]
 
     root_center = (
-        root_part["dx"],
-        root_part["dy"],
+        geometry(root_part, "dx"),
+        geometry(root_part, "dy"),
     )
 
     while pending:
@@ -260,17 +307,30 @@ def reconstruct(category, model, scale=1.0):
 
             x = (
                 placed[parent]["x"]
-                + scale * part["dx"]
+                + scale * geometry(part, "dx")
                 if parent
                 else root_center[0]
             )
 
             y = (
                 placed[parent]["y"]
-                + scale * part["dy"]
+                + scale * geometry(part, "dy")
                 if parent
                 else root_center[1]
             )
+
+            width = (
+                geometry(part, "width") * scale
+            )
+
+            height = (
+                geometry(part, "height") * scale
+            )
+
+            if width <= 0 or height <= 0:
+                raise ValueError(
+                    "Variation produced invalid size"
+                )
 
             component = {
                 "id": (
@@ -282,12 +342,8 @@ def reconstruct(category, model, scale=1.0):
                 "color": part["color"],
                 "x": round(x, 6),
                 "y": round(y, 6),
-                "width": round(
-                    part["width"] * scale, 6
-                ),
-                "height": round(
-                    part["height"] * scale, 6
-                ),
+                "width": round(width, 6),
+                "height": round(height, 6),
             }
 
             placed[role] = component
@@ -305,16 +361,16 @@ def reconstruct(category, model, scale=1.0):
         "status": "generated",
         "object": category,
         "scale": scale,
+        "variation": variation,
+        "seed": seed,
         "method": (
-            "averaged_relative_component_offsets"
+            "sampled_training_example_deviations"
         ),
         "components": components,
     }
 
 
 def component_bounds(part, width, height):
-    """Return actual pixel bounds of a rendered shape."""
-
     cx = part["x"] * width
     cy = part["y"] * height
 
@@ -355,16 +411,6 @@ def calculate_canvas_fit(
     height,
     padding=16,
 ):
-    """Fit the full object inside the canvas.
-
-    A single uniform scale is used for both axes.
-    This preserves circular shapes and relative
-    component positions.
-
-    Fitting is performed only for SVG output.
-    The learned JSON coordinates remain unchanged.
-    """
-
     if not components:
         return 1.0, 0.0, 0.0
 
@@ -377,7 +423,6 @@ def calculate_canvas_fit(
 
     left = min(b[0] for b in bounds)
     top = min(b[1] for b in bounds)
-
     right = max(b[2] for b in bounds)
     bottom = max(b[3] for b in bounds)
 
@@ -439,8 +484,6 @@ def render_relationship_svg(
     width=512,
     height=288,
 ):
-    """Render all components without canvas clipping."""
-
     svg = ET.Element(
         "svg",
         xmlns="http://www.w3.org/2000/svg",
@@ -467,8 +510,6 @@ def render_relationship_svg(
         height,
     )
 
-    # All shapes share one transformation.
-    # This preserves their relative positions.
     group = ET.SubElement(
         svg,
         "g",
@@ -587,6 +628,18 @@ def main():
         default=1.0,
     )
 
+    parser.add_argument(
+        "--variation",
+        type=float,
+        default=0.0,
+    )
+
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=1337,
+    )
+
     args = parser.parse_args()
 
     output = Path(args.output)
@@ -600,7 +653,7 @@ def main():
 
     model = {
         "project": "MELODIA AI",
-        "version": "1.2",
+        "version": "1.3",
         "model_type": (
             "geometric_component_relationships"
         ),
@@ -616,6 +669,8 @@ def main():
         args.object,
         learned,
         args.scale,
+        args.variation,
+        args.seed,
     )
 
     (
@@ -638,10 +693,12 @@ def main():
         )
 
     print(
-        "MELODIA COMPONENT RELATIONSHIP LEARNER V1.2"
+        "MELODIA COMPONENT RELATIONSHIP LEARNER V1.3"
     )
     print("Categories:", len(learned))
     print("Requested:", args.object)
+    print("Variation:", args.variation)
+    print("Seed:", args.seed)
     print("Status:", representation["status"])
     print("Output:", output)
 
