@@ -33,16 +33,12 @@ jobs:
         run: |
           python - <<'PY'
           import json
-          import math
           import subprocess
           import sys
-          import tempfile
           import types
           from pathlib import Path
           from unittest.mock import patch
 
-          # The V2.4 dependency is replaced only inside these V2.5 integration
-          # tests, allowing the production muxing to be exercised independently.
           stub = types.ModuleType('melodia_cinematic_video_renderer')
           stub.render_video = lambda *args, **kwargs: None
           sys.modules['melodia_cinematic_video_renderer'] = stub
@@ -72,57 +68,65 @@ jobs:
               ], text=True)
               return json.loads(data)
 
-          with tempfile.TemporaryDirectory() as directory:
-              tmp = Path(directory)
-              with patch.object(production, 'render_video', fake_render):
-                  for aspect, dimensions in [('16:9', (1280, 720)), ('9:16', (720, 1280))]:
-                      output = tmp / ('landscape.mp4' if aspect == '16:9' else 'portrait.mp4')
-                      result = production.produce_video(plan, output, aspect=aspect, fps=10,
-                                                        bilingual_language='ta')
-                      assert result['caption_events'] == 1, result
-                      assert output.is_file() and output.stat().st_size > 0
-                      info = probe(output)
-                      video = next(s for s in info['streams'] if s['codec_type'] == 'video')
-                      assert (video['width'], video['height']) == dimensions, info
-                      assert abs(float(info['format']['duration']) - 2) < 0.5, info
-                      print('PASS: bilingual MP4', aspect)
+          # Unlike TemporaryDirectory, these files survive until artifact upload.
+          output_dir = Path('artifacts/v25-production-samples')
+          output_dir.mkdir(parents=True, exist_ok=True)
+          with patch.object(production, 'render_video', fake_render):
+              for aspect, dimensions in [('16:9', (1280, 720)), ('9:16', (720, 1280))]:
+                  output = output_dir / ('landscape.mp4' if aspect == '16:9' else 'portrait.mp4')
+                  result = production.produce_video(plan, output, aspect=aspect, fps=10,
+                                                    bilingual_language='ta')
+                  assert result['caption_events'] == 1, result
+                  assert output.is_file() and output.stat().st_size > 0
+                  info = probe(output)
+                  video = next(s for s in info['streams'] if s['codec_type'] == 'video')
+                  assert (video['width'], video['height']) == dimensions, info
+                  assert abs(float(info['format']['duration']) - 2) < 0.5, info
+                  print('PASS: bilingual MP4', aspect)
 
-                  # Verify optional instrumental-audio muxing using a generated test tone.
-                  audio = tmp / 'test_audio.wav'
-                  subprocess.run([
-                      'ffmpeg', '-hide_banner', '-loglevel', 'error', '-y',
-                      '-f', 'lavfi', '-i', 'sine=frequency=440:duration=1',
-                      '-c:a', 'pcm_s16le', str(audio)
-                  ], check=True)
-                  with_music = tmp / 'music.mp4'
-                  production.produce_video(plan, with_music, fps=10, music=audio)
-                  assert any(s['codec_type'] == 'audio' for s in probe(with_music)['streams'])
-                  print('PASS: audio muxing')
+              audio = output_dir / 'test_audio.wav'
+              subprocess.run([
+                  'ffmpeg', '-hide_banner', '-loglevel', 'error', '-y',
+                  '-f', 'lavfi', '-i', 'sine=frequency=440:duration=1',
+                  '-c:a', 'pcm_s16le', str(audio)
+              ], check=True)
+              with_music = output_dir / 'music.mp4'
+              production.produce_video(plan, with_music, fps=10, music=audio)
+              assert any(s['codec_type'] == 'audio' for s in probe(with_music)['streams'])
+              print('PASS: audio muxing')
 
-                  silent = tmp / 'silent.mp4'
-                  result = production.produce_video(plan, silent, fps=10, captions=False)
-                  assert result['caption_events'] == 0
-                  assert not any(s['codec_type'] == 'audio' for s in probe(silent)['streams'])
-                  print('PASS: captions disabled and silent output')
+              silent = output_dir / 'silent.mp4'
+              result = production.produce_video(plan, silent, fps=10, captions=False)
+              assert result['caption_events'] == 0
+              assert not any(s['codec_type'] == 'audio' for s in probe(silent)['streams'])
+              print('PASS: captions disabled and silent output')
 
-              def expect_error(expected, callback):
-                  try:
-                      callback()
-                  except expected:
-                      return
-                  raise AssertionError(f'Expected {expected.__name__}')
+          def expect_error(expected, callback):
+              try:
+                  callback()
+              except expected:
+                  return
+              raise AssertionError(f'Expected {expected.__name__}')
 
-              missing = dict(plan, scenes=[{'captions': {'ta': 'வணக்கம்'}}])
-              expect_error(ValueError, lambda: production.produce_video(missing, tmp / 'bad.mp4'))
-              expect_error(ValueError, lambda: production.produce_video(plan, tmp / 'bad.mp4', aspect='4:3'))
-              expect_error(ValueError, lambda: production.produce_video(plan, tmp / 'bad.mp4', music_volume=2, music=tmp / 'x.wav'))
-              expect_error(FileNotFoundError, lambda: production.produce_video(plan, tmp / 'bad.mp4', music=tmp / 'x.wav'))
-              print('PASS: invalid input handling')
+          missing = dict(plan, scenes=[{'captions': {'ta': 'வணக்கம்'}}])
+          expect_error(ValueError, lambda: production.produce_video(missing, output_dir / 'bad.mp4'))
+          expect_error(ValueError, lambda: production.produce_video(plan, output_dir / 'bad.mp4', aspect='4:3'))
+          expect_error(ValueError, lambda: production.produce_video(plan, output_dir / 'bad.mp4', music_volume=2, music=output_dir / 'x.wav'))
+          expect_error(FileNotFoundError, lambda: production.produce_video(plan, output_dir / 'bad.mp4', music=output_dir / 'x.wav'))
+          print('PASS: invalid input handling')
 
-              ass = tmp / 'captions.ass'
-              assert production._make_ass(plan, ass, 1280, 720, 'ta') == 1
-              content = ass.read_text(encoding='utf-8')
-              assert 'Peace and hope' in content and 'அமைதியும் நம்பிக்கையும்' in content
-              print('PASS: bilingual ASS text')
+          ass = output_dir / 'captions.ass'
+          assert production._make_ass(plan, ass, 1280, 720, 'ta') == 1
+          content = ass.read_text(encoding='utf-8')
+          assert 'Peace and hope' in content and 'அமைதியும் நம்பிக்கையும்' in content
+          print('PASS: bilingual ASS text')
           print('MELODIA V2.5 validation complete')
           PY
+      - name: Upload V2.5 sample video artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: melodia-v25-production-samples
+          path: artifacts/v25-production-samples/
+          if-no-files-found: error
+          retention-days: 14
