@@ -1,0 +1,381 @@
+
+name: MELODIA AI - Universal Object Schema Validation
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - "melodia_universal_object_schema.py"
+      - "melodia_component_relationship_learner.py"
+      - "melodia_geometric_object_learner.py"
+      - ".github/workflows/universal-object-schema-validation.yml"
+
+jobs:
+  validate-universal-schema:
+    name: Validate Universal Object Schema V1.4
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Run universal schema validation
+        shell: bash
+        run: |
+          python - <<'PY'
+          import copy
+          import json
+          import subprocess
+          import sys
+          from pathlib import Path
+
+          from melodia_component_relationship_learner import train
+          from melodia_geometric_object_learner import EXAMPLES
+
+          from melodia_universal_object_schema import (
+              SCHEMA_VERSION,
+              build_universal_library,
+              validate_object,
+              validate_component,
+              load_existing_model,
+          )
+
+          OUTPUT = Path("melodia_universal_validation")
+          OUTPUT.mkdir(parents=True, exist_ok=True)
+
+          results = []
+
+          def check(condition, message):
+              if not condition:
+                  raise AssertionError(message)
+
+          def test(name, function):
+              try:
+                  function()
+                  results.append({
+                      "test": name,
+                      "status": "pass",
+                  })
+                  print("PASS:", name)
+              except Exception as exc:
+                  results.append({
+                      "test": name,
+                      "status": "fail",
+                      "error": str(exc),
+                  })
+                  print("FAIL:", name, str(exc))
+
+          def expect_invalid(obj):
+              try:
+                  validate_object(obj)
+              except ValueError:
+                  return
+              raise AssertionError(
+                  "Invalid object was accepted"
+              )
+
+          learned = train(EXAMPLES)
+          library = build_universal_library(learned)
+
+          expected_categories = {
+              "tree",
+              "house",
+              "vehicle",
+              "animal",
+              "flower",
+          }
+
+          def test_categories():
+              check(
+                  expected_categories.issubset(
+                      library["objects"]
+                  ),
+                  "Missing object categories",
+              )
+
+              check(
+                  library["schema_version"] == SCHEMA_VERSION,
+                  "Incorrect schema version",
+              )
+
+          test("expected_categories", test_categories)
+
+          for category, obj in library["objects"].items():
+
+              def test_conversion(category=category, obj=obj):
+                  check(
+                      validate_object(obj),
+                      "Object validation failed",
+                  )
+
+                  original = learned[category]
+
+                  check(
+                      obj["root"] == original["root"],
+                      "Root changed",
+                  )
+
+                  check(
+                      len(obj["components"])
+                      == len(original["parts"]),
+                      "Component count changed",
+                  )
+
+                  source = {
+                      part["role"]: part
+                      for part in original["parts"]
+                  }
+
+                  for component in obj["components"]:
+                      role = component["role"]
+                      old = source[role]
+
+                      check(
+                          component["parent"]
+                          == old["parent"],
+                          f"{role}: parent changed",
+                      )
+
+                      for field in (
+                          "dx", "dy", "width", "height"
+                      ):
+                          check(
+                              component["geometry"][field]
+                              == old[field],
+                              f"{role}: geometry changed",
+                          )
+
+                      check(
+                          component["appearance"]["shape"]
+                          == old["shape"],
+                          f"{role}: shape changed",
+                      )
+
+                      check(
+                          component["appearance"]["color"]
+                          == old["color"],
+                          f"{role}: color changed",
+                      )
+
+                      check(
+                          component["training_deviations"]
+                          == old["deviations"],
+                          f"{role}: deviations changed",
+                      )
+
+              test(
+                  f"conversion_{category}",
+                  test_conversion,
+              )
+
+          sample = copy.deepcopy(
+              library["objects"]["tree"]
+          )
+
+          def test_duplicate_role():
+              invalid = copy.deepcopy(sample)
+              invalid["components"].append(
+                  copy.deepcopy(
+                      invalid["components"][0]
+                  )
+              )
+              expect_invalid(invalid)
+
+          test("reject_duplicate_role", test_duplicate_role)
+
+          def test_missing_parent():
+              invalid = copy.deepcopy(sample)
+
+              for component in invalid["components"]:
+                  if component["parent"] is not None:
+                      component["parent"] = "missing_role"
+                      break
+              else:
+                  raise AssertionError(
+                      "No child component available"
+                  )
+
+              expect_invalid(invalid)
+
+          test("reject_missing_parent", test_missing_parent)
+
+          def test_cycle():
+              invalid = copy.deepcopy(sample)
+              components = invalid["components"]
+              roles = {
+                  part["role"]: part
+                  for part in components
+              }
+
+              root = invalid["root"]
+
+              children = [
+                  part for part in components
+                  if part["parent"] == root
+              ]
+
+              check(
+                  bool(children),
+                  "No root child available",
+              )
+
+              child = children[0]
+              roles[root]["parent"] = child["role"]
+
+              expect_invalid(invalid)
+
+          test("reject_cycle", test_cycle)
+
+          def test_invalid_size():
+              invalid = copy.deepcopy(sample)
+              invalid["components"][0]["geometry"][
+                  "width"
+              ] = -0.5
+              expect_invalid(invalid)
+
+          test("reject_invalid_size", test_invalid_size)
+
+          def test_unsupported_shape():
+              invalid = copy.deepcopy(sample)
+              invalid["components"][0]["appearance"][
+                  "shape"
+              ] = "unsupported_shape"
+              expect_invalid(invalid)
+
+          test("reject_unsupported_shape", test_unsupported_shape)
+
+          def test_invalid_overlap():
+              invalid = copy.deepcopy(sample)
+              invalid["components"][0]["constraints"][
+                  "overlap_frequency"
+              ] = 2.0
+              expect_invalid(invalid)
+
+          test("reject_invalid_overlap", test_invalid_overlap)
+
+          def test_invalid_deviation():
+              invalid = copy.deepcopy(sample)
+              component = invalid["components"][0]
+
+              component["training_deviations"] = [
+                  {
+                      "dx": "invalid",
+                      "dy": 0.0,
+                      "width": 0.0,
+                      "height": 0.0,
+                  }
+              ]
+
+              expect_invalid(invalid)
+
+          test(
+              "reject_invalid_deviation",
+              test_invalid_deviation,
+          )
+
+          def test_cli_generation():
+              subprocess.run(
+                  [
+                      sys.executable,
+                      "melodia_universal_object_schema.py",
+                      "--output",
+                      str(OUTPUT / "generated"),
+                  ],
+                  check=True,
+              )
+
+              path = (
+                  OUTPUT
+                  / "generated"
+                  / "universal_object_library.json"
+              )
+
+              check(
+                  path.exists(),
+                  "Library JSON was not generated",
+              )
+
+              generated = json.loads(
+                  path.read_text(encoding="utf-8")
+              )
+
+              check(
+                  generated == library,
+                  "Generated library differs from trained model",
+              )
+
+          test("cli_generation", test_cli_generation)
+
+          def test_model_reload():
+              model_path = OUTPUT / "relationship_model.json"
+
+              model_path.write_text(
+                  json.dumps({
+                      "project": "MELODIA AI",
+                      "version": "1.3",
+                      "categories": learned,
+                  }, indent=2),
+                  encoding="utf-8",
+              )
+
+              reloaded = load_existing_model(model_path)
+
+              check(
+                  reloaded == learned,
+                  "Reloaded model differs",
+              )
+
+              check(
+                  build_universal_library(reloaded)
+                  == library,
+                  "Reloaded library differs",
+              )
+
+          test("model_reload", test_model_reload)
+
+          report = {
+              "project": "MELODIA AI",
+              "schema_version": SCHEMA_VERSION,
+              "suite": "universal_object_schema_validation",
+              "total_tests": len(results),
+              "passed": sum(
+                  item["status"] == "pass"
+                  for item in results
+              ),
+              "failed": sum(
+                  item["status"] == "fail"
+                  for item in results
+              ),
+              "results": results,
+          }
+
+          (OUTPUT / "validation_report.json").write_text(
+              json.dumps(report, indent=2),
+              encoding="utf-8",
+          )
+
+          print(json.dumps({
+              "total": report["total_tests"],
+              "passed": report["passed"],
+              "failed": report["failed"],
+          }, indent=2))
+
+          if report["failed"]:
+              sys.exit(1)
+          PY
+
+      - name: Upload universal schema validation results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: melodia-universal-object-schema-validation
+          path: melodia_universal_validation/
+          if-no-files-found: warn
+          retention-days: 30
