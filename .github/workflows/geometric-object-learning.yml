@@ -1,0 +1,194 @@
+
+name: MELODIA AI - Geometric Object Learning
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "melodia_geometric_object_learner.py"
+      - ".github/workflows/geometric-object-learning.yml"
+
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  learn-geometric-objects:
+    name: Train and Validate Geometric Object Prototypes
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Verify Python syntax
+        run: |
+          python -m py_compile melodia_geometric_object_learner.py
+
+      - name: Learn tree representation
+        run: |
+          python melodia_geometric_object_learner.py \
+            --object tree \
+            --seed 1337 \
+            --output melodia_object_tests/tree
+
+      - name: Learn house representation
+        run: |
+          python melodia_geometric_object_learner.py \
+            --object house \
+            --seed 1337 \
+            --output melodia_object_tests/house
+
+      - name: Learn vehicle representation
+        run: |
+          python melodia_geometric_object_learner.py \
+            --object vehicle \
+            --seed 1337 \
+            --output melodia_object_tests/vehicle
+
+      - name: Learn animal representation
+        run: |
+          python melodia_geometric_object_learner.py \
+            --object animal \
+            --seed 1337 \
+            --output melodia_object_tests/animal
+
+      - name: Learn flower representation
+        run: |
+          python melodia_geometric_object_learner.py \
+            --object flower \
+            --seed 1337 \
+            --output melodia_object_tests/flower
+
+      - name: Validate learned object representations
+        run: |
+          python - <<'PY'
+          import json
+          import math
+          from pathlib import Path
+
+          categories = [
+              "tree",
+              "house",
+              "vehicle",
+              "animal",
+              "flower"
+          ]
+
+          expected_shapes = {
+              "circle",
+              "ellipse",
+              "rectangle",
+              "triangle",
+              "polygon"
+          }
+
+          for category in categories:
+              folder = Path("melodia_object_tests") / category
+
+              model_path = folder / "object_model.json"
+              representation_path = (
+                  folder / "object_representation.json"
+              )
+
+              assert model_path.is_file(), model_path
+              assert representation_path.is_file(), representation_path
+
+              model = json.loads(
+                  model_path.read_text(encoding="utf-8")
+              )
+
+              representation = json.loads(
+                  representation_path.read_text(encoding="utf-8")
+              )
+
+              assert model["version"] == "1.0"
+              assert model["model_type"] == "geometric_object_prototypes"
+              assert len(model["prototypes"]) == 5
+
+              assert representation["status"] == "generated"
+              assert representation["object"] == category
+
+              features = representation["features"]
+
+              assert len(features) == 6
+              assert all(
+                  isinstance(value, (int, float))
+                  and math.isfinite(value)
+                  and 0.0 <= value <= 1.0
+                  for value in features
+              )
+
+              components = representation["components"]
+
+              assert len(components) >= 2
+
+              for component in components:
+                  assert component["shape"] in expected_shapes
+
+              print(
+                  "PASS:",
+                  category,
+                  "components:",
+                  len(components)
+              )
+
+          print("ALL FIVE OBJECT LEARNING TESTS PASSED")
+          PY
+
+      - name: Test unknown object handling
+        run: |
+          python melodia_geometric_object_learner.py \
+            --object unknown_object \
+            --output melodia_object_tests/unknown
+
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          path = Path(
+              "melodia_object_tests/unknown/object_representation.json"
+          )
+
+          report = json.loads(
+              path.read_text(encoding="utf-8")
+          )
+
+          assert report["status"] == "unknown"
+          assert report["requested_object"] == "unknown_object"
+
+          print("UNKNOWN OBJECT HANDLING PASSED")
+          PY
+
+      - name: Save learned models and representations
+        uses: actions/upload-artifact@v4
+        with:
+          name: melodia-geometric-object-learning
+          path: melodia_object_tests/
+          retention-days: 30
+          if-no-files-found: error
+
+      - name: Write workflow summary
+        if: success()
+        run: |
+          echo "## MELODIA Geometric Object Learning" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "Five geometric object categories processed." >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Tree" >> "$GITHUB_STEP_SUMMARY"
+          echo "- House" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Vehicle" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Animal" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Flower" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "Unknown-object handling also tested." >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "Model and representation artifacts saved." >> "$GITHUB_STEP_SUMMARY"
