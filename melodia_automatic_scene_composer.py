@@ -1,26 +1,18 @@
 
 """MELODIA AI - Automatic Scene Composer V1.8.
 
-Creates composed SVG scenes from the V1.7 spatial engine.
+Automatic geometric scene composition with:
+- Day, sunset and night backgrounds
+- Ground alignment
+- Spatial relationship preservation
+- Canvas fitting
+- Deterministic SVG and JSON output
 
-Features:
-- Natural-language object selection through V1.7
-- Automatic sky and ground backgrounds
-- Ground alignment for supported objects
-- Preservation of left/right and above/below relationships
-- Automatic scene fitting
-- Reproducible SVG and JSON exports
-- Optional landscape, sunset and night themes
-
-Standard library only.
+Ground alignment correction:
+Final composition fitting preserves the ground position
+instead of vertically centering ground-based objects.
 
 Existing MELODIA engines remain unchanged.
-
-Limitations:
-- Geometric illustrations, not photorealistic images
-- Rule-based English prompt interpretation
-- Five previously learned object categories
-- Basic layout and environmental styling
 """
 
 import argparse
@@ -33,9 +25,11 @@ import xml.etree.ElementTree as ET
 
 from melodia_geometric_object_learner import EXAMPLES
 from melodia_automatic_structure_learner import learn_all
+
 from melodia_spatial_relationship_engine import (
     generate_spatial_scene,
 )
+
 from melodia_prompt_scene_generator import (
     CANVAS_WIDTH,
     CANVAS_HEIGHT,
@@ -45,6 +39,8 @@ from melodia_prompt_scene_generator import (
 VERSION = "1.8"
 
 GROUND_Y = 0.82
+
+MARGIN = 0.045
 
 THEMES = {
     "day": {
@@ -79,7 +75,7 @@ VERTICAL_RELATIONS = {
 
 
 def detect_theme(prompt):
-    """Select a background theme from prompt words."""
+    """Detect a supported environmental theme."""
 
     tokens = set(
         re.findall(
@@ -106,7 +102,7 @@ def detect_theme(prompt):
 
 
 def object_bounds(obj):
-    """Calculate object bounds in normalized coordinates."""
+    """Return normalized bounds of an object."""
 
     components = obj["components"]
 
@@ -126,7 +122,10 @@ def object_bounds(obj):
         if not all(
             math.isfinite(value)
             for value in (
-                x, y, width, height
+                x,
+                y,
+                width,
+                height,
             )
         ):
             raise ValueError(
@@ -154,7 +153,7 @@ def object_bounds(obj):
 
 
 def shift_object(obj, dx, dy):
-    """Translate an object without changing its geometry."""
+    """Translate an object without modifying its source."""
 
     shifted = copy.deepcopy(obj)
 
@@ -183,7 +182,7 @@ def shift_object(obj, dx, dy):
 
 
 def vertical_object_ids(scene):
-    """Find objects involved in explicit vertical relations."""
+    """Find objects protected by vertical relationships."""
 
     ids = set()
 
@@ -196,11 +195,7 @@ def vertical_object_ids(scene):
 
 
 def align_objects_to_ground(scene):
-    """Align ordinary objects to the ground line.
-
-    Objects involved in explicit above/below relations
-    retain their relative vertical positioning.
-    """
+    """Ground-align objects without breaking vertical relations."""
 
     result = copy.deepcopy(scene)
 
@@ -216,9 +211,7 @@ def align_objects_to_ground(scene):
             aligned.append(obj)
             continue
 
-        bounds = object_bounds(obj)
-
-        bottom = bounds[3]
+        bottom = object_bounds(obj)[3]
 
         dy = GROUND_Y - bottom
 
@@ -236,27 +229,35 @@ def align_objects_to_ground(scene):
 
 
 def fit_composition(scene):
-    """Fit the composed objects inside the visible canvas."""
+    """Fit objects while preserving ground alignment.
+
+    Ground-based objects remain on GROUND_Y.
+
+    Objects involved in explicit vertical relationships
+    are transformed together so their relative ordering
+    is preserved.
+
+    When a scene contains ground-based objects, the
+    composition is anchored to the ground rather than
+    vertically centered.
+    """
 
     result = copy.deepcopy(scene)
 
-    if not result["objects"]:
+    objects = result["objects"]
+
+    if not objects:
         return result
 
     bounds = [
         object_bounds(obj)
-        for obj in result["objects"]
+        for obj in objects
     ]
 
     left = min(b[0] for b in bounds)
     top = min(b[1] for b in bounds)
     right = max(b[2] for b in bounds)
     bottom = max(b[3] for b in bounds)
-
-    margin = 0.045
-
-    available_width = 1 - 2 * margin
-    available_height = 1 - 2 * margin
 
     width = right - left
     height = bottom - top
@@ -266,61 +267,125 @@ def fit_composition(scene):
             "Invalid scene bounds"
         )
 
-    factor = min(
-        1.0,
-        available_width / width,
-        available_height / height,
-    )
+    protected = vertical_object_ids(result)
+
+    grounded = [
+        obj
+        for obj in objects
+        if (
+            obj["category"] in GROUND_CATEGORIES
+            and obj["id"] not in protected
+        )
+    ]
+
+    available_width = 1.0 - 2.0 * MARGIN
+
+    # Preserve the existing ground line.
+    # Grounded objects must fit between the top margin
+    # and the ground, with any protected objects also
+    # remaining inside the visible canvas.
+
+    scale_x = available_width / width
+
+    if grounded:
+        ground_bottoms = [
+            object_bounds(obj)[3]
+            for obj in grounded
+        ]
+
+        ground_reference = max(
+            ground_bottoms
+        )
+
+        space_above = ground_reference - top
+        space_below = bottom - ground_reference
+
+        scale_y = 1.0
+
+        if space_above > 0:
+            scale_y = min(
+                scale_y,
+                (GROUND_Y - MARGIN)
+                / space_above,
+            )
+
+        if space_below > 0:
+            scale_y = min(
+                scale_y,
+                (1.0 - MARGIN - GROUND_Y)
+                / space_below,
+            )
+
+        scale = min(
+            1.0,
+            scale_x,
+            scale_y,
+        )
+
+        anchor_y = ground_reference
+        target_y = GROUND_Y
+
+    else:
+        available_height = (
+            1.0 - 2.0 * MARGIN
+        )
+
+        scale = min(
+            1.0,
+            scale_x,
+            available_height / height,
+        )
+
+        anchor_y = (top + bottom) / 2
+        target_y = 0.5
 
     center_x = (left + right) / 2
-    center_y = (top + bottom) / 2
-
-    target_x = 0.5
-    target_y = 0.5
 
     transformed = []
 
-    for obj in result["objects"]:
+    for obj in objects:
         updated = copy.deepcopy(obj)
 
         for part in updated["components"]:
             part["x"] = round(
-                target_x
-                + (part["x"] - center_x) * factor,
+                0.5
+                + (
+                    part["x"] - center_x
+                ) * scale,
                 6,
             )
 
             part["y"] = round(
                 target_y
-                + (part["y"] - center_y) * factor,
+                + (
+                    part["y"] - anchor_y
+                ) * scale,
                 6,
             )
 
             part["width"] = round(
-                part["width"] * factor,
+                part["width"] * scale,
                 6,
             )
 
             part["height"] = round(
-                part["height"] * factor,
+                part["height"] * scale,
                 6,
             )
 
         updated["center"]["x"] = round(
-            target_x
+            0.5
             + (
-                obj["center"]["x"]
-                - center_x
-            ) * factor,
+                obj["center"]["x"] - center_x
+            ) * scale,
             6,
         )
 
         updated["center"]["y"] = round(
             target_y
             + (
-                obj["center"]["y"]
-                - center_y
-            ) * factor,
+                obj["center"]["y"] - anchor_y
+            ) * scale,
             6,
         )
 
@@ -337,7 +402,7 @@ def compose_scene(
     seed=1337,
     variation=0.5,
 ):
-    """Build and visually compose a V1.7 scene."""
+    """Generate and compose a geometric scene."""
 
     base = generate_spatial_scene(
         prompt,
@@ -365,6 +430,7 @@ def compose_scene(
     composed["version"] = VERSION
     composed["base_version"] = "1.7"
     composed["theme"] = theme
+
     composed["environment"] = {
         "sky_color": THEMES[theme]["sky"],
         "ground_color": THEMES[theme]["ground"],
@@ -375,7 +441,7 @@ def compose_scene(
 
 
 def render_composed_svg(scene):
-    """Render environment and geometric objects."""
+    """Render the composed SVG scene."""
 
     if scene["status"] != "generated":
         raise ValueError(
@@ -403,24 +469,18 @@ def render_composed_svg(scene):
     )
 
     if scene["theme"] == "night":
-        ET.SubElement(
-            root,
-            "circle",
-            cx="875",
-            cy="105",
-            r="38",
-            fill=theme["sun"],
-        )
-
+        sun_radius = "38"
     else:
-        ET.SubElement(
-            root,
-            "circle",
-            cx="875",
-            cy="105",
-            r="48",
-            fill=theme["sun"],
-        )
+        sun_radius = "48"
+
+    ET.SubElement(
+        root,
+        "circle",
+        cx="875",
+        cy="105",
+        r=sun_radius,
+        fill=theme["sun"],
+    )
 
     ground_pixel = (
         GROUND_Y * CANVAS_HEIGHT
@@ -432,19 +492,23 @@ def render_composed_svg(scene):
         x="0",
         y=f"{ground_pixel:.6f}",
         width=str(CANVAS_WIDTH),
-        height=f"{CANVAS_HEIGHT - ground_pixel:.6f}",
+        height=(
+            f"{CANVAS_HEIGHT - ground_pixel:.6f}"
+        ),
         fill=theme["ground"],
     )
 
-    # Reuse the validated V1.6 SVG renderer for objects.
+    # Preserve the validated object renderer.
     object_svg = ET.fromstring(
         render_scene_svg(scene)
     )
 
-    ns = "{http://www.w3.org/2000/svg}"
+    namespace = (
+        "{http://www.w3.org/2000/svg}"
+    )
 
     for child in object_svg:
-        if child.tag == ns + "g":
+        if child.tag == namespace + "g":
             root.append(child)
 
     return ET.tostring(
@@ -467,7 +531,9 @@ def main():
 
     parser.add_argument(
         "--output",
-        default="melodia_composed_scene_output",
+        default=(
+            "melodia_composed_scene_output"
+        ),
     )
 
     parser.add_argument(
