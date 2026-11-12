@@ -25,7 +25,7 @@ jobs:
       - name: Install FFmpeg
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y ffmpeg libass9 fonts-dejavu-core
+          sudo apt-get install -y ffmpeg libass9 fonts-dejavu-core fonts-noto-core fonts-noto-extra
       - name: Verify Python syntax
         run: python -m py_compile melodia_video_production_engine.py
       - name: Validate production features and render sample MP4s
