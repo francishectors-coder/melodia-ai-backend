@@ -1,0 +1,100 @@
+
+name: MELODIA AI - Component Relationship Learning
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "melodia_component_relationship_learner.py"
+      - "melodia_geometric_object_learner.py"
+      - ".github/workflows/component-relationship-learning.yml"
+
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test-component-relationships:
+    name: Learn and Validate Component Relationships
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Verify Python syntax
+        run: |
+          python -m py_compile \
+            melodia_geometric_object_learner.py \
+            melodia_component_relationship_learner.py
+
+      - name: Inspect learner command-line interface
+        run: |
+          python melodia_component_relationship_learner.py --help
+
+      - name: Run component relationship learner
+        run: |
+          python melodia_component_relationship_learner.py \
+            --object vehicle \
+            --output melodia_relationship_tests/vehicle
+
+      - name: Verify generated output
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          output = Path(
+              "melodia_relationship_tests/vehicle"
+          )
+
+          assert output.is_dir(), (
+              "Relationship learner output directory missing"
+          )
+
+          files = [
+              path for path in output.rglob("*")
+              if path.is_file()
+          ]
+
+          assert files, (
+              "Relationship learner produced no output files"
+          )
+
+          for path in files:
+              assert path.stat().st_size > 0, (
+                  f"Empty output file: {path}"
+              )
+
+          print("Generated files:")
+          for path in files:
+              print("PASS:", path)
+
+          print("OUTPUT GENERATION VERIFIED")
+          PY
+
+      - name: Save relationship learning artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: melodia-component-relationship-learning
+          path: melodia_relationship_tests/
+          retention-days: 30
+          if-no-files-found: warn
+
+      - name: Write workflow summary
+        if: success()
+        run: |
+          echo "## MELODIA Component Relationship Learning" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "Vehicle relationship learner executed." >> "$GITHUB_STEP_SUMMARY"
+          echo "Output files verified as nonempty." >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "Further semantic and geometric validation is required." >> "$GITHUB_STEP_SUMMARY"
