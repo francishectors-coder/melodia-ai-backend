@@ -1,0 +1,133 @@
+name: MELODIA V2.3 Cinematic Orchestration Validation
+
+on:
+  push:
+    paths:
+      - 'melodia_cinematic_orchestration_engine.py'
+      - 'melodia_scene_continuity_engine.py'
+      - 'melodia_camera_movement_engine.py'
+      - 'melodia_cinematic_transition_engine.py'
+      - 'melodia_scene_depth_engine.py'
+      - '.github/workflows/cinematic-orchestration-validation.yml'
+  workflow_dispatch:
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Run orchestration validation
+        shell: bash
+        run: |
+          python - <<'PY'
+          import copy
+          import json
+          import math
+          import pathlib
+          import subprocess
+          import sys
+          import tempfile
+          import traceback
+
+          from melodia_cinematic_orchestration_engine import orchestrate_scenes, orchestrate_prompts
+
+          def obj(identity, x=0.5, y=0.5, depth='middle'):
+              return {'id': identity, 'category': 'tree', 'center': {'x': x, 'y': y}, 'depth': depth}
+
+          def scenes():
+              return [
+                  {'duration': 10, 'objects': [obj('tree', 0.3)]},
+                  {'duration': 8, 'objects': [obj('tree', 0.6), obj('flower', 0.8)]},
+                  {'duration': 6, 'objects': [obj('house', 0.5)]},
+              ]
+
+          tests = []
+          def check(name, action):
+              try:
+                  action()
+                  tests.append({'name': name, 'status': 'passed'})
+                  print('PASS', name)
+              except Exception as exc:
+                  tests.append({'name': name, 'status': 'failed', 'error': str(exc), 'traceback': traceback.format_exc()})
+                  print('FAIL', name, str(exc))
+
+          def assert_equal(actual, expected):
+              assert actual == expected, f'expected {expected!r}, got {actual!r}'
+
+          def rejects(action, exception=ValueError):
+              try:
+                  action()
+              except exception:
+                  return
+              raise AssertionError(f'expected {exception.__name__}')
+
+          check('version', lambda: assert_equal(orchestrate_scenes(scenes())['version'], '2.3'))
+          check('scene count', lambda: assert_equal(orchestrate_scenes(scenes())['scene_count'], 3))
+          check('source duration', lambda: assert_equal(orchestrate_scenes(scenes())['total_source_duration_seconds'], 24.0))
+          check('output duration', lambda: assert_equal(orchestrate_scenes(scenes())['total_output_duration_seconds'], 22.0))
+          check('transition count', lambda: assert_equal(len(orchestrate_scenes(scenes())['cinematic_transitions']), 2))
+          check('camera count', lambda: assert_equal(len(orchestrate_scenes(scenes())['camera_plans']), 3))
+          check('timeline count', lambda: assert_equal(len(orchestrate_scenes(scenes())['scene_timeline']), 3))
+          check('camera synchronized', lambda: assert_equal([p['start_seconds'] for p in orchestrate_scenes(scenes())['camera_plans']], [0.0, 9.0, 16.0]))
+          check('scene starts', lambda: assert_equal([p['start_seconds'] for p in orchestrate_scenes(scenes())['scene_timeline']], [0.0, 9.0, 16.0]))
+          check('scene ends', lambda: assert_equal([p['end_seconds'] for p in orchestrate_scenes(scenes())['scene_timeline']], [10.0, 17.0, 22.0]))
+          check('shared object', lambda: assert_equal(orchestrate_scenes(scenes())['cinematic_transitions'][0]['shared_objects'], ['tree']))
+          check('disjoint transition', lambda: assert_equal(orchestrate_scenes(scenes())['cinematic_transitions'][1]['transition'], 'fade_through_black'))
+          check('tracks', lambda: assert_equal(sorted(orchestrate_scenes(scenes())['object_tracks']), ['flower', 'house', 'tree']))
+          check('engine versions', lambda: assert_equal(orchestrate_scenes(scenes())['engine_versions'], {'continuity':'2.0','camera':'2.1','transitions':'2.2'}))
+          check('deterministic', lambda: assert_equal(orchestrate_scenes(scenes()), orchestrate_scenes(scenes())))
+          check('nonmutating', lambda: (lambda s: (orchestrate_scenes(s), assert_equal(s, scenes())))(scenes()))
+          check('single scene', lambda: assert_equal(orchestrate_scenes([scenes()[0]])['total_output_duration_seconds'], 10.0))
+          check('cut has no overlap', lambda: assert_equal(orchestrate_scenes(scenes(), preferred_transition='cut')['total_output_duration_seconds'], 24.0))
+          check('custom overlap', lambda: assert_equal(orchestrate_scenes(scenes(), transition_duration=2)['total_output_duration_seconds'], 20.0))
+          check('missing center fallback', lambda: assert_equal(orchestrate_scenes([{'objects':[{'id':'a'}]}])['scenes'][0]['objects'][0]['center'], {'x':0.5,'y':0.5}))
+          check('empty object list', lambda: assert_equal(orchestrate_scenes([{'objects':[]}])['camera_plans'][0]['movement'], 'static'))
+          check('reject empty scenes', lambda: rejects(lambda: orchestrate_scenes([])))
+          check('reject nonlist scenes', lambda: rejects(lambda: orchestrate_scenes({})))
+          check('reject missing objects', lambda: rejects(lambda: orchestrate_scenes([{}])))
+          check('reject zero duration', lambda: rejects(lambda: orchestrate_scenes([{'objects':[], 'duration':0}])))
+          check('reject boolean duration', lambda: rejects(lambda: orchestrate_scenes([{'objects':[], 'duration':True}])))
+          check('reject invalid center', lambda: rejects(lambda: orchestrate_scenes([{'objects':[obj('a', 2)]}])))
+          check('reject duplicate ids', lambda: rejects(lambda: orchestrate_scenes([{'objects':[obj('a'), obj('a')]}])))
+          check('reject boolean seed', lambda: rejects(lambda: orchestrate_scenes(scenes(), seed=True)))
+          check('reject bad transition', lambda: rejects(lambda: orchestrate_scenes(scenes(), preferred_transition='wipe')))
+          check('reject too-long overlap', lambda: rejects(lambda: orchestrate_scenes(scenes(), transition_duration=4)))
+          check('reject invalid intensity', lambda: rejects(lambda: orchestrate_scenes(scenes(), camera_intensity=2)))
+          check('reject empty prompts', lambda: rejects(lambda: orchestrate_prompts([])))
+          check('reject blank prompt', lambda: rejects(lambda: orchestrate_prompts([' '])))
+
+          def cli_test():
+              with tempfile.TemporaryDirectory() as d:
+                  source = pathlib.Path(d) / 'input.json'
+                  output = pathlib.Path(d) / 'output.json'
+                  source.write_text(json.dumps({'scenes': scenes()}), encoding='utf-8')
+                  subprocess.run([sys.executable, 'melodia_cinematic_orchestration_engine.py', '--input', str(source), '--output', str(output)], check=True, capture_output=True, text=True)
+                  assert_equal(json.loads(output.read_text(encoding='utf-8'))['scene_count'], 3)
+          check('CLI JSON export', cli_test)
+
+          # Depth prompt integration is tested with existing geometric learners.
+          # It is deliberately a separate test so any missing repository dependency is visible.
+          def depth_prompt_test():
+              result = orchestrate_prompts(['A tree in the background and a flower in the foreground at sunset'])
+              assert_equal(result['engine_versions']['depth'], '1.9')
+              assert_equal(result['scene_count'], 1)
+          check('V1.9 prompt integration', depth_prompt_test)
+
+          report = {'project': 'MELODIA AI', 'version': '2.3', 'total': len(tests),
+                    'passed': sum(t['status'] == 'passed' for t in tests),
+                    'failed': sum(t['status'] == 'failed' for t in tests), 'tests': tests}
+          pathlib.Path('validation_report.json').write_text(json.dumps(report, indent=2), encoding='utf-8')
+          print(f"RESULT: {report['passed']}/{report['total']} passed; {report['failed']} failed")
+          if report['failed']:
+              sys.exit(1)
+          PY
+      - name: Upload validation report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: melodia-cinematic-orchestration-validation
+          path: validation_report.json
+          if-no-files-found: warn
