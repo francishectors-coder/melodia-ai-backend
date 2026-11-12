@@ -1,25 +1,27 @@
 
 """MELODIA AI - Spatial Relationship Engine V1.7.
 
-Interprets simple English relationships between objects:
+Corrected repeated-object reference resolution.
+
+Supports:
 - left of / right of
 - above / below
 - beside / next to
 - near
+- multiple spatial relationships
+- repeated references to an existing object
+- deterministic SVG scene generation
 
-Uses V1.6 for object reconstruction and SVG rendering.
-
-Produces JSON and SVG scenes.
+Uses existing V1.5 and V1.6 engines.
 
 Standard library only.
-Does not modify existing MELODIA engines.
+Previously validated MELODIA engines remain unchanged.
 
 Limitations:
-- Supports known V1.5 object categories only.
-- Uses rule-based English parsing.
-- Supports singular object references and repeated
-  references to an already introduced object.
-- Does not understand unrestricted natural language.
+- Rule-based English parsing
+- Known geometric object categories only
+- Simple relationships between adjacent object mentions
+- Ambiguous references are not fully understood
 """
 
 import argparse
@@ -77,17 +79,10 @@ OFFSETS = {
     "near": (0.16, 0.04),
 }
 
-INVERSE = {
-    "left_of": "right_of",
-    "right_of": "left_of",
-    "above": "below",
-    "below": "above",
-    "beside": "beside",
-    "near": "near",
-}
-
 
 def alias_lookup(categories):
+    """Map supported object names to categories."""
+
     lookup = {}
 
     for category in sorted(categories):
@@ -103,31 +98,95 @@ def alias_lookup(categories):
 
 
 def identify_mentions(prompt, categories):
-    """Identify ordered object mentions in a prompt."""
+    """Identify object mentions in reading order."""
 
     lookup = alias_lookup(categories)
-
     mentions = []
+
+    text = prompt.lower()
 
     for match in re.finditer(
         r"\b[a-z]+\b",
-        prompt.lower(),
+        text,
     ):
         word = match.group()
 
-        if word in lookup:
-            mentions.append({
-                "category": lookup[word],
-                "word": word,
-                "start": match.start(),
-                "end": match.end(),
-            })
+        if word not in lookup:
+            continue
+
+        prefix = text[:match.start()]
+
+        article_match = re.search(
+            r"\b(a|an|the)\s+$",
+            prefix,
+        )
+
+        article = (
+            article_match.group(1)
+            if article_match
+            else None
+        )
+
+        mentions.append({
+            "category": lookup[word],
+            "word": word,
+            "article": article,
+            "start": match.start(),
+            "end": match.end(),
+        })
 
     return mentions
 
 
+def resolve_references(mentions):
+    """Resolve definite references to earlier objects.
+
+    Example:
+    'a house ... the house'
+    refers to the same house.
+
+    Indefinite references such as 'a house'
+    introduce new objects.
+
+    The resolver uses the most recent matching
+    category for a definite reference.
+    """
+
+    objects = []
+    mention_to_object = {}
+    latest_by_category = {}
+
+    for index, mention in enumerate(mentions):
+        category = mention["category"]
+        article = mention["article"]
+
+        if (
+            article == "the"
+            and category in latest_by_category
+        ):
+            object_index = latest_by_category[
+                category
+            ]
+
+        else:
+            object_index = len(objects)
+
+            objects.append({
+                "category": category,
+                "first_mention": index,
+            })
+
+        mention_to_object[index] = object_index
+
+        latest_by_category[category] = (
+            object_index
+        )
+
+    return objects, mention_to_object
+
+
 def identify_relations(prompt, mentions):
-    """Find relationships between adjacent mentions."""
+    """Find relations between adjacent mentions."""
 
     text = prompt.lower()
     relations = []
@@ -157,10 +216,56 @@ def identify_relations(prompt, mentions):
     return relations
 
 
-def construct_layout(mentions, relations):
-    """Assign relative coordinates to object mentions."""
+def resolve_relations(
+    mention_relations,
+    mention_to_object,
+):
+    """Convert mention relations into object relations."""
 
-    count = len(mentions)
+    resolved = []
+    seen = set()
+
+    for relation in mention_relations:
+        subject = mention_to_object[
+            relation["subject_index"]
+        ]
+
+        target = mention_to_object[
+            relation["object_index"]
+        ]
+
+        if subject == target:
+            continue
+
+        key = (
+            subject,
+            target,
+            relation["relation"],
+        )
+
+        if key in seen:
+            continue
+
+        seen.add(key)
+
+        resolved.append({
+            "subject_index": subject,
+            "object_index": target,
+            "relation": relation["relation"],
+        })
+
+    return resolved
+
+
+def construct_layout(objects, relations):
+    """Assign normalized coordinates to unique objects.
+
+    Object relationships form a graph.
+    Each relation adds a relative positioning
+    constraint between its two objects.
+    """
+
+    count = len(objects)
 
     if count == 0:
         return []
@@ -202,17 +307,19 @@ def construct_layout(mentions, relations):
 
         while queue:
             current = queue.pop(0)
+
             x, y = positions[current]
 
             for neighbor, dx, dy in adjacency[current]:
-                proposed = (
+                if neighbor in positions:
+                    continue
+
+                positions[neighbor] = (
                     x + dx,
                     y + dy,
                 )
 
-                if neighbor not in positions:
-                    positions[neighbor] = proposed
-                    queue.append(neighbor)
+                queue.append(neighbor)
 
         component_index += 1
 
@@ -240,21 +347,30 @@ def construct_layout(mentions, relations):
         0.7 / span_y if span_y else 1.0,
     )
 
-    center_x = (min_x + max_x) / 2
-    center_y = (min_y + max_y) / 2
+    center_x = (
+        min_x + max_x
+    ) / 2
+
+    center_y = (
+        min_y + max_y
+    ) / 2
 
     return [
         (
             round(
                 0.5
-                + (positions[index][0] - center_x)
-                * scale,
+                + (
+                    positions[index][0]
+                    - center_x
+                ) * scale,
                 6,
             ),
             round(
                 0.5
-                + (positions[index][1] - center_y)
-                * scale,
+                + (
+                    positions[index][1]
+                    - center_y
+                ) * scale,
                 6,
             ),
         )
@@ -268,9 +384,12 @@ def generate_spatial_scene(
     seed=1337,
     variation=0.5,
 ):
-    """Generate a scene with inferred spatial placement."""
+    """Generate a scene with resolved object references."""
 
-    if not isinstance(prompt, str) or not prompt.strip():
+    if (
+        not isinstance(prompt, str)
+        or not prompt.strip()
+    ):
         raise ValueError(
             "Prompt must be a non-empty string"
         )
@@ -292,22 +411,29 @@ def generate_spatial_scene(
             ),
         }
 
-    relations = identify_relations(
+    unique_objects, mention_map = (
+        resolve_references(mentions)
+    )
+
+    mention_relations = identify_relations(
         prompt,
         mentions,
     )
 
+    relations = resolve_relations(
+        mention_relations,
+        mention_map,
+    )
+
     centers = construct_layout(
-        mentions,
+        unique_objects,
         relations,
     )
 
-    # V1.6 reconstructs each object and supplies
-    # consistent geometric variation.
     base_scene = build_scene(
         " ".join(
-            mention["category"]
-            for mention in mentions
+            obj["category"]
+            for obj in unique_objects
         ),
         learned,
         seed=seed,
@@ -319,20 +445,26 @@ def generate_spatial_scene(
             "Base scene generation failed"
         )
 
-    if len(base_scene["objects"]) != len(mentions):
+    if (
+        len(base_scene["objects"])
+        != len(unique_objects)
+    ):
         raise ValueError(
             "Base object count mismatch"
         )
 
-    objects = []
-
     object_size = min(
         0.55,
-        0.8 / len(mentions),
+        0.8 / len(unique_objects),
     )
 
+    objects = []
+
     for index, (obj, center) in enumerate(
-        zip(base_scene["objects"], centers)
+        zip(
+            base_scene["objects"],
+            centers,
+        )
     ):
         components = place_object(
             obj["components"],
@@ -385,7 +517,7 @@ def main():
         "--prompt",
         default=(
             "A tree to the left of a house "
-            "and a flower to the right of a house"
+            "and a flower to the right of the house"
         ),
     )
 
@@ -409,6 +541,7 @@ def main():
     args = parser.parse_args()
 
     output = Path(args.output)
+
     output.mkdir(
         parents=True,
         exist_ok=True,
