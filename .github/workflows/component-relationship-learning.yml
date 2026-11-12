@@ -16,8 +16,8 @@ permissions:
   contents: read
 
 jobs:
-  test-component-relationships:
-    name: Learn and Validate Component Relationships
+  validate-relationships:
+    name: Validate Five Object Categories
     runs-on: ubuntu-latest
     timeout-minutes: 10
 
@@ -36,55 +36,197 @@ jobs:
             melodia_geometric_object_learner.py \
             melodia_component_relationship_learner.py
 
-      - name: Inspect learner command-line interface
+      - name: Generate all five object categories
         run: |
-          python melodia_component_relationship_learner.py --help
+          set -e
 
-      - name: Run component relationship learner
+          for object in tree house vehicle animal flower
+          do
+            echo "Generating: $object"
+
+            python melodia_component_relationship_learner.py \
+              --object "$object" \
+              --output "melodia_relationship_tests/$object"
+          done
+
+      - name: Test unknown object handling
         run: |
           python melodia_component_relationship_learner.py \
-            --object vehicle \
-            --output melodia_relationship_tests/vehicle
+            --object unknown_object \
+            --output melodia_relationship_tests/unknown
 
-      - name: Verify generated output
+      - name: Validate JSON and SVG outputs
         run: |
           python - <<'PY'
+          import json
+          import math
+          import xml.etree.ElementTree as ET
           from pathlib import Path
 
-          output = Path(
-              "melodia_relationship_tests/vehicle"
-          )
+          root = Path("melodia_relationship_tests")
 
-          assert output.is_dir(), (
-              "Relationship learner output directory missing"
-          )
-
-          files = [
-              path for path in output.rglob("*")
-              if path.is_file()
+          categories = [
+              "tree",
+              "house",
+              "vehicle",
+              "animal",
+              "flower"
           ]
 
-          assert files, (
-              "Relationship learner produced no output files"
-          )
+          results = []
 
-          for path in files:
-              assert path.stat().st_size > 0, (
-                  f"Empty output file: {path}"
+          for category in categories:
+              folder = root / category
+
+              model_path = folder / "relationship_model.json"
+              data_path = folder / "relationship_representation.json"
+              svg_path = folder / "relationship_preview.svg"
+
+              for path in (model_path, data_path, svg_path):
+                  assert path.is_file(), f"Missing: {path}"
+                  assert path.stat().st_size > 0, f"Empty: {path}"
+
+              model = json.loads(
+                  model_path.read_text(encoding="utf-8")
               )
 
-          print("Generated files:")
-          for path in files:
-              print("PASS:", path)
+              data = json.loads(
+                  data_path.read_text(encoding="utf-8")
+              )
 
-          print("OUTPUT GENERATION VERIFIED")
+              assert isinstance(model, dict)
+              assert isinstance(data, dict)
+
+              assert data.get("status") == "generated", (
+                  f"{category}: generation failed"
+              )
+
+              # Check every numeric value in the representation.
+              def validate_numbers(value):
+                  if isinstance(value, dict):
+                      for child in value.values():
+                          validate_numbers(child)
+
+                  elif isinstance(value, list):
+                      for child in value:
+                          validate_numbers(child)
+
+                  elif isinstance(value, float):
+                      assert math.isfinite(value), (
+                          f"{category}: non-finite number"
+                      )
+
+              validate_numbers(model)
+              validate_numbers(data)
+
+              # Check SVG structure and geometry.
+              svg = ET.parse(svg_path).getroot()
+
+              assert svg.tag.endswith("svg"), (
+                  f"{category}: invalid SVG root"
+              )
+
+              shapes = []
+
+              for element in svg.iter():
+                  tag = element.tag.split("}")[-1]
+
+                  if tag in (
+                      "circle",
+                      "ellipse",
+                      "rect",
+                      "polygon",
+                      "path"
+                  ):
+                      shapes.append(element)
+
+                  for attribute in (
+                      "x", "y", "cx", "cy",
+                      "rx", "ry", "r",
+                      "width", "height"
+                  ):
+                      raw = element.get(attribute)
+
+                      if raw is None:
+                          continue
+
+                      value = float(raw)
+
+                      assert math.isfinite(value), (
+                          f"{category}: invalid SVG coordinate"
+                      )
+
+                      if attribute in (
+                          "rx", "ry", "r",
+                          "width", "height"
+                      ):
+                          assert value >= 0, (
+                              f"{category}: negative dimension"
+                          )
+
+              assert len(shapes) >= 2, (
+                  f"{category}: insufficient SVG shapes"
+              )
+
+              result = {
+                  "object": category,
+                  "status": "pass",
+                  "svg_shape_count": len(shapes),
+                  "files_verified": 3
+              }
+
+              results.append(result)
+
+              print(
+                  "PASS:",
+                  category,
+                  "| SVG shapes:",
+                  len(shapes)
+              )
+
+          # Unknown-object output must be explicit.
+          unknown_path = (
+              root
+              / "unknown"
+              / "relationship_representation.json"
+          )
+
+          assert unknown_path.is_file(), (
+              "Unknown-object representation missing"
+          )
+
+          unknown = json.loads(
+              unknown_path.read_text(encoding="utf-8")
+          )
+
+          assert unknown.get("status") == "unknown", (
+              "Unknown object was not rejected"
+          )
+
+          report = {
+              "project": "MELODIA AI",
+              "test": "component_relationship_validation",
+              "categories_tested": len(categories),
+              "unknown_object_handling": "pass",
+              "results": results
+          }
+
+          report_path = root / "validation_report.json"
+
+          report_path.write_text(
+              json.dumps(report, indent=2),
+              encoding="utf-8"
+          )
+
+          print("ALL FIVE CATEGORY TESTS PASSED")
+          print("UNKNOWN OBJECT HANDLING PASSED")
           PY
 
-      - name: Save relationship learning artifacts
+      - name: Upload relationship learning artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: melodia-component-relationship-learning
+          name: melodia-five-category-relationships
           path: melodia_relationship_tests/
           retention-days: 30
           if-no-files-found: warn
@@ -92,9 +234,15 @@ jobs:
       - name: Write workflow summary
         if: success()
         run: |
-          echo "## MELODIA Component Relationship Learning" >> "$GITHUB_STEP_SUMMARY"
+          echo "## MELODIA AI - Relationship Validation" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "Vehicle relationship learner executed." >> "$GITHUB_STEP_SUMMARY"
-          echo "Output files verified as nonempty." >> "$GITHUB_STEP_SUMMARY"
+          echo "Five object categories generated and validated." >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "Further semantic and geometric validation is required." >> "$GITHUB_STEP_SUMMARY"
+          echo "- Tree" >> "$GITHUB_STEP_SUMMARY"
+          echo "- House" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Vehicle" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Animal" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Flower" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "Unknown-object handling validated." >> "$GITHUB_STEP_SUMMARY"
+          echo "SVG previews saved for inspection." >> "$GITHUB_STEP_SUMMARY"
