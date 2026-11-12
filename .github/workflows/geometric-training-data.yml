@@ -1,0 +1,103 @@
+
+name: MELODIA AI - Unattended Geometric Training Data
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "melodia_geometric_training.py"
+      - ".github/workflows/geometric-training-data.yml"
+
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  generate-training-data:
+    name: Generate and Validate Training Data
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout MELODIA AI repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Verify Python syntax
+        run: |
+          python -m py_compile melodia_geometric_training.py
+
+      - name: Generate geometric training datasets
+        run: |
+          python melodia_geometric_training.py \
+            --output melodia_training_output \
+            --train-count 2000 \
+            --eval-count 200 \
+            --seed 1337
+
+      - name: Verify dataset files
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          folder = Path("melodia_training_output")
+
+          train_file = folder / "train.jsonl"
+          eval_file = folder / "evaluation.jsonl"
+          manifest_file = folder / "dataset_manifest.json"
+
+          assert train_file.is_file()
+          assert eval_file.is_file()
+          assert manifest_file.is_file()
+
+          with train_file.open(encoding="utf-8") as f:
+              training = [json.loads(line) for line in f]
+
+          with eval_file.open(encoding="utf-8") as f:
+              evaluation = [json.loads(line) for line in f]
+
+          assert len(training) == 2000
+          assert len(evaluation) == 200
+
+          from melodia_geometric_training import (
+              validate_relationship,
+              validate_bounds,
+          )
+
+          for record in training + evaluation:
+              scene = record["scene"]
+              assert validate_relationship(scene)
+              assert validate_bounds(scene)
+
+          manifest = json.loads(
+              manifest_file.read_text(encoding="utf-8")
+          )
+
+          assert manifest["version"] == "1.1"
+
+          print("MELODIA TRAINING DATA VALIDATION PASSED")
+          print("Training examples:", len(training))
+          print("Evaluation examples:", len(evaluation))
+          PY
+
+      - name: Save training datasets
+        uses: actions/upload-artifact@v4
+        with:
+          name: melodia-geometric-training-data
+          path: melodia_training_output/
+          retention-days: 30
+          if-no-files-found: error
+
+      - name: Training data preparation completed
+        run: |
+          echo "MELODIA geometric dataset generation completed."
+          echo "Training examples: 2000"
+          echo "Evaluation examples: 200"
+          echo "Dataset artifact uploaded."
