@@ -1,0 +1,540 @@
+
+name: MELODIA AI - Automatic Scene Composition Validation
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - "melodia_automatic_scene_composer.py"
+      - "melodia_spatial_relationship_engine.py"
+      - "melodia_prompt_scene_generator.py"
+      - "melodia_automatic_structure_learner.py"
+      - "melodia_component_relationship_learner.py"
+      - "melodia_geometric_object_learner.py"
+      - ".github/workflows/automatic-scene-composition-validation.yml"
+
+jobs:
+  validate-scene-composition:
+    name: Validate Automatic Scene Composer V1.8
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Run V1.8 validation
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          import math
+          import subprocess
+          import sys
+          import xml.etree.ElementTree as ET
+          from pathlib import Path
+
+          from melodia_geometric_object_learner import EXAMPLES
+          from melodia_automatic_structure_learner import learn_all
+          from melodia_automatic_scene_composer import (
+              VERSION,
+              THEMES,
+              GROUND_Y,
+              detect_theme,
+              object_bounds,
+              shift_object,
+              align_objects_to_ground,
+              fit_composition,
+              compose_scene,
+              render_composed_svg,
+          )
+
+          OUTPUT = Path("melodia_scene_composition_validation")
+          OUTPUT.mkdir(parents=True, exist_ok=True)
+
+          learned = learn_all(EXAMPLES)
+          results = []
+
+          def check(condition, message):
+              if not condition:
+                  raise AssertionError(message)
+
+          def test(name, function):
+              try:
+                  details = function()
+                  results.append({
+                      "test": name,
+                      "status": "pass",
+                      "details": details,
+                  })
+                  print("PASS:", name)
+              except Exception as exc:
+                  results.append({
+                      "test": name,
+                      "status": "fail",
+                      "error": str(exc),
+                  })
+                  print("FAIL:", name, str(exc))
+
+          def expect_value_error(function):
+              try:
+                  function()
+              except ValueError:
+                  return
+              raise AssertionError(
+                  "Expected ValueError was not raised"
+              )
+
+          def verify_geometry(scene):
+              check(
+                  scene["status"] == "generated",
+                  "Scene generation failed",
+              )
+              check(
+                  scene["version"] == VERSION,
+                  "Incorrect version",
+              )
+              check(
+                  bool(scene["objects"]),
+                  "Scene contains no objects",
+              )
+
+              ids = set()
+
+              for obj in scene["objects"]:
+                  check(
+                      obj["id"] not in ids,
+                      "Duplicate object ID",
+                  )
+                  ids.add(obj["id"])
+
+                  for part in obj["components"]:
+                      for field in (
+                          "x", "y", "width", "height"
+                      ):
+                          check(
+                              math.isfinite(part[field]),
+                              f"Non-finite {field}",
+                          )
+                      check(
+                          part["width"] > 0
+                          and part["height"] > 0,
+                          "Invalid component dimensions",
+                      )
+
+                  left, top, right, bottom = object_bounds(obj)
+
+                  check(
+                      left >= 0.045 - 0.00001
+                      and top >= 0.045 - 0.00001
+                      and right <= 0.955 + 0.00001
+                      and bottom <= 0.955 + 0.00001,
+                      "Object outside composition margins",
+                  )
+
+              for relation in scene["relationships"]:
+                  check(
+                      relation["subject"] in ids,
+                      "Unknown relationship subject",
+                  )
+                  check(
+                      relation["target"] in ids,
+                      "Unknown relationship target",
+                  )
+
+          def verify_svg(scene, svg_text):
+              ns = "{http://www.w3.org/2000/svg}"
+              root = ET.fromstring(svg_text)
+
+              check(
+                  root.tag == ns + "svg",
+                  "Invalid SVG root",
+              )
+              check(
+                  root.get("width") == "1024"
+                  and root.get("height") == "576",
+                  "Incorrect canvas dimensions",
+              )
+
+              object_ids = {
+                  element.get("id")
+                  for element in root.iter(ns + "g")
+                  if element.get("id")
+              }
+
+              check(
+                  {obj["id"] for obj in scene["objects"]}
+                  .issubset(object_ids),
+                  "SVG object groups missing",
+              )
+
+              rects = list(root.findall(ns + "rect"))
+
+              check(
+                  len(rects) >= 2,
+                  "Sky or ground rectangle missing",
+              )
+
+              check(
+                  rects[0].get("fill")
+                  == THEMES[scene["theme"]]["sky"],
+                  "Incorrect sky color",
+              )
+
+              check(
+                  rects[1].get("fill")
+                  == THEMES[scene["theme"]]["ground"],
+                  "Incorrect ground color",
+              )
+
+              return root
+
+          def save_scene(name, prompt):
+              scene = compose_scene(
+                  prompt,
+                  learned,
+                  seed=1337,
+                  variation=0.5,
+              )
+
+              verify_geometry(scene)
+
+              svg = render_composed_svg(scene)
+              verify_svg(scene, svg)
+
+              folder = OUTPUT / "scenes" / name
+              folder.mkdir(parents=True, exist_ok=True)
+
+              (folder / "composed_scene.json").write_text(
+                  json.dumps(scene, indent=2),
+                  encoding="utf-8",
+              )
+
+              (folder / "composed_scene.svg").write_text(
+                  svg,
+                  encoding="utf-8",
+              )
+
+              return scene
+
+          # Three environment themes.
+          themes = {
+              "day": "A tree beside a house in daylight",
+              "sunset": "A tree beside a house at sunset",
+              "night": "A tree beside a house at night",
+          }
+
+          for expected, prompt in themes.items():
+              def theme_test(expected=expected, prompt=prompt):
+                  scene = save_scene(expected, prompt)
+
+                  check(
+                      scene["theme"] == expected,
+                      "Incorrect theme",
+                  )
+
+                  return {
+                      "theme": expected,
+                      "objects": len(scene["objects"]),
+                  }
+
+              test(f"theme_{expected}", theme_test)
+
+          # Ground alignment before final scene fitting.
+          for category in sorted(learned):
+              def ground_test(category=category):
+                  from melodia_spatial_relationship_engine import (
+                      generate_spatial_scene,
+                  )
+
+                  base = generate_spatial_scene(
+                      category,
+                      learned,
+                  )
+
+                  aligned = align_objects_to_ground(base)
+
+                  obj = aligned["objects"][0]
+                  bottom = object_bounds(obj)[3]
+
+                  check(
+                      abs(bottom - GROUND_Y) < 0.00001,
+                      "Ground alignment failed",
+                  )
+
+                  return {
+                      "category": category,
+                      "bottom": bottom,
+                  }
+
+              test(f"ground_alignment_{category}", ground_test)
+
+          def spatial_relationship_test():
+              scene = save_scene(
+                  "spatial_relationships",
+                  "A tree to the left of a house "
+                  "and a flower to the right of the house",
+              )
+
+              check(
+                  len(scene["objects"]) == 3,
+                  "Expected three unique objects",
+              )
+
+              check(
+                  len(scene["relationships"]) == 2,
+                  "Expected two relationships",
+              )
+
+              objects = {
+                  obj["id"]: obj
+                  for obj in scene["objects"]
+              }
+
+              for relation in scene["relationships"]:
+                  subject = objects[relation["subject"]]
+                  target = objects[relation["target"]]
+
+                  sx = subject["center"]["x"]
+                  tx = target["center"]["x"]
+
+                  if relation["relation"] == "left_of":
+                      check(sx < tx, "Left relation lost")
+
+                  if relation["relation"] == "right_of":
+                      check(sx > tx, "Right relation lost")
+
+              return {
+                  "objects": 3,
+                  "relationships": 2,
+              }
+
+          test(
+              "spatial_relationship_preservation",
+              spatial_relationship_test,
+          )
+
+          def vertical_relationship_test():
+              scene = save_scene(
+                  "vertical_relationship",
+                  "A flower above a vehicle",
+              )
+
+              relation = scene["relationships"][0]
+              objects = {
+                  obj["id"]: obj
+                  for obj in scene["objects"]
+              }
+
+              subject = objects[relation["subject"]]
+              target = objects[relation["target"]]
+
+              check(
+                  subject["center"]["y"]
+                  < target["center"]["y"],
+                  "Above relationship lost",
+              )
+
+              return {"relation": "above"}
+
+          test(
+              "vertical_relationship_preservation",
+              vertical_relationship_test,
+          )
+
+          def reproducibility_test():
+              prompt = "A tree beside a house at sunset"
+
+              first = compose_scene(
+                  prompt, learned, seed=77, variation=0.8
+              )
+              second = compose_scene(
+                  prompt, learned, seed=77, variation=0.8
+              )
+
+              check(
+                  first == second,
+                  "Same seed produced different scenes",
+              )
+
+              check(
+                  render_composed_svg(first)
+                  == render_composed_svg(second),
+                  "SVG rendering is not reproducible",
+              )
+
+              return {"reproducible": True}
+
+          test("reproducibility", reproducibility_test)
+
+          def unsupported_test():
+              scene = compose_scene(
+                  "A mountain beside an ocean",
+                  learned,
+              )
+
+              check(
+                  scene["status"] == "unsupported",
+                  "Unsupported prompt was accepted",
+              )
+
+              return {"status": "unsupported"}
+
+          test("unsupported_prompt", unsupported_test)
+
+          def empty_prompt_test():
+              expect_value_error(
+                  lambda: compose_scene("", learned)
+              )
+
+          test("reject_empty_prompt", empty_prompt_test)
+
+          def invalid_variation_test():
+              expect_value_error(
+                  lambda: compose_scene(
+                      "A tree", learned, variation=2.0
+                  )
+              )
+
+          test(
+              "reject_invalid_variation",
+              invalid_variation_test,
+          )
+
+          def invalid_geometry_test():
+              obj = {
+                  "components": [{
+                      "x": 0.5,
+                      "y": 0.5,
+                      "width": -0.2,
+                      "height": 0.3,
+                  }]
+              }
+
+              expect_value_error(
+                  lambda: object_bounds(obj)
+              )
+
+          test(
+              "reject_invalid_geometry",
+              invalid_geometry_test,
+          )
+
+          def translation_test():
+              base = compose_scene("A tree", learned)
+              original = base["objects"][0]
+
+              moved = shift_object(original, 0.1, -0.1)
+
+              check(
+                  moved["center"]["x"]
+                  == round(original["center"]["x"] + 0.1, 6),
+                  "Incorrect X translation",
+              )
+
+              check(
+                  moved["center"]["y"]
+                  == round(original["center"]["y"] - 0.1, 6),
+                  "Incorrect Y translation",
+              )
+
+              check(
+                  original != moved,
+                  "Original object was modified",
+              )
+
+              return {"translation": "correct"}
+
+          test("object_translation", translation_test)
+
+          def cli_test():
+              folder = OUTPUT / "cli_output"
+
+              subprocess.run(
+                  [
+                      sys.executable,
+                      "melodia_automatic_scene_composer.py",
+                      "--prompt",
+                      "A tree beside a house at sunset",
+                      "--output",
+                      str(folder),
+                  ],
+                  check=True,
+                  capture_output=True,
+                  text=True,
+              )
+
+              json_path = folder / "composed_scene.json"
+              svg_path = folder / "composed_scene.svg"
+
+              check(
+                  json_path.exists(),
+                  "CLI JSON missing",
+              )
+              check(
+                  svg_path.exists(),
+                  "CLI SVG missing",
+              )
+
+              scene = json.loads(
+                  json_path.read_text(encoding="utf-8")
+              )
+
+              verify_geometry(scene)
+              verify_svg(
+                  scene,
+                  svg_path.read_text(encoding="utf-8"),
+              )
+
+              return {
+                  "cli": "passed",
+                  "objects": len(scene["objects"]),
+              }
+
+          test("command_line_generation", cli_test)
+
+          report = {
+              "project": "MELODIA AI",
+              "version": VERSION,
+              "suite": "automatic_scene_composition",
+              "total_tests": len(results),
+              "passed": sum(
+                  item["status"] == "pass"
+                  for item in results
+              ),
+              "failed": sum(
+                  item["status"] == "fail"
+                  for item in results
+              ),
+              "results": results,
+          }
+
+          (OUTPUT / "validation_report.json").write_text(
+              json.dumps(report, indent=2),
+              encoding="utf-8",
+          )
+
+          print(json.dumps({
+              "total": report["total_tests"],
+              "passed": report["passed"],
+              "failed": report["failed"],
+          }, indent=2))
+
+          if report["failed"]:
+              sys.exit(1)
+          PY
+
+      - name: Upload validation artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: melodia-automatic-scene-composition-validation
+          path: melodia_scene_composition_validation/
+          if-no-files-found: warn
+          retention-days: 30
