@@ -1,0 +1,150 @@
+
+name: MELODIA AI - Geometric Scene Reasoner
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "melodia_geometric_scene_reasoner.py"
+      - ".github/workflows/geometric-scene-reasoner.yml"
+
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  generate-geometric-scenes:
+    name: Generate and Validate Geometric Scenes
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Verify Python syntax
+        run: |
+          python -m py_compile melodia_geometric_scene_reasoner.py
+
+      - name: Generate above relationship
+        run: |
+          python melodia_geometric_scene_reasoner.py \
+            --prompt "A red circle above a blue square" \
+            --output melodia_scene_tests/above
+
+      - name: Generate below relationship
+        run: |
+          python melodia_geometric_scene_reasoner.py \
+            --prompt "A green triangle below a yellow rectangle" \
+            --output melodia_scene_tests/below
+
+      - name: Generate beside relationship
+        run: |
+          python melodia_geometric_scene_reasoner.py \
+            --prompt "A purple ellipse beside an orange circle" \
+            --output melodia_scene_tests/beside
+
+      - name: Generate inside relationship
+        run: |
+          python melodia_geometric_scene_reasoner.py \
+            --prompt "A red circle inside a blue square" \
+            --output melodia_scene_tests/inside
+
+      - name: Generate overlapping relationship
+        run: |
+          python melodia_geometric_scene_reasoner.py \
+            --prompt "A green circle overlapping a yellow rectangle" \
+            --output melodia_scene_tests/overlapping
+
+      - name: Validate generated scenes
+        run: |
+          python - <<'PY'
+          import json
+          import xml.etree.ElementTree as ET
+          from pathlib import Path
+
+          expected = {
+              "above": "above",
+              "below": "below",
+              "beside": "beside",
+              "inside": "inside",
+              "overlapping": "overlapping"
+          }
+
+          for folder, relation in expected.items():
+              directory = Path("melodia_scene_tests") / folder
+
+              json_file = directory / "scene.json"
+              svg_file = directory / "scene.svg"
+
+              assert json_file.is_file(), json_file
+              assert svg_file.is_file(), svg_file
+
+              scene = json.loads(
+                  json_file.read_text(encoding="utf-8")
+              )
+
+              assert scene["status"] == "supported"
+              assert len(scene["objects"]) == 2
+              assert (
+                  scene["relationship"]["relation"]
+                  == relation
+              )
+
+              root = ET.parse(svg_file).getroot()
+
+              assert root.tag.endswith("svg")
+
+              first, second = scene["objects"]
+
+              if relation == "above":
+                  assert first["y"] < second["y"]
+
+              elif relation == "below":
+                  assert first["y"] > second["y"]
+
+              elif relation == "beside":
+                  assert first["x"] != second["x"]
+
+              elif relation == "inside":
+                  assert first["x"] == second["x"]
+                  assert first["y"] == second["y"]
+                  assert first["size"] < second["size"]
+
+              elif relation == "overlapping":
+                  assert abs(first["x"] - second["x"]) < 65
+
+              print("PASS:", folder)
+
+          print("ALL FIVE GEOMETRIC SCENE TESTS PASSED")
+          PY
+
+      - name: Save generated geometric scenes
+        uses: actions/upload-artifact@v4
+        with:
+          name: melodia-geometric-scene-tests
+          path: melodia_scene_tests/
+          retention-days: 30
+          if-no-files-found: error
+
+      - name: Write workflow summary
+        if: success()
+        run: |
+          echo "## MELODIA Geometric Scene Reasoner" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "Five geometric scenes generated and validated." >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Above" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Below" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Beside" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Inside" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Overlapping" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "SVG images and JSON files saved as artifacts." >> "$GITHUB_STEP_SUMMARY"
