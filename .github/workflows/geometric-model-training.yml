@@ -9,6 +9,7 @@ on:
       - "melodia_geometric_training.py"
       - "melodia_geometric_model_trainer.py"
       - "melodia_geometric_generalization_test.py"
+      - "melodia_geometric_unseen_language_test.py"
       - ".github/workflows/geometric-model-training.yml"
 
   workflow_dispatch:
@@ -40,6 +41,7 @@ jobs:
           python -m py_compile melodia_geometric_training.py
           python -m py_compile melodia_geometric_model_trainer.py
           python -m py_compile melodia_geometric_generalization_test.py
+          python -m py_compile melodia_geometric_unseen_language_test.py
 
       - name: Generate training and evaluation datasets
         run: |
@@ -96,7 +98,7 @@ jobs:
           print("TRAINED MODEL VALIDATION PASSED")
           PY
 
-      - name: Test unfamiliar language descriptions
+      - name: Test language generalization
         run: |
           python melodia_geometric_generalization_test.py \
             --model melodia_model_output/model.json \
@@ -109,14 +111,47 @@ jobs:
           import math
           from pathlib import Path
 
-          report_file = Path(
+          path = Path(
               "melodia_generalization_output/generalization_report.json"
           )
 
-          assert report_file.is_file()
+          assert path.is_file()
 
           report = json.loads(
-              report_file.read_text(encoding="utf-8")
+              path.read_text(encoding="utf-8")
+          )
+
+          assert report["total"] == 25
+          assert len(report["results"]) == 25
+          assert 0 <= report["correct"] <= 25
+          assert math.isfinite(report["accuracy"])
+          assert 0.0 <= report["accuracy"] <= 1.0
+
+          print("GENERALIZATION TEST COMPLETED")
+          print("Accuracy:", f"{report['accuracy']:.2%}")
+          PY
+
+      - name: Test unseen-language understanding
+        run: |
+          python melodia_geometric_unseen_language_test.py \
+            --model melodia_model_output/model.json \
+            --output melodia_unseen_language_output
+
+      - name: Verify unseen-language report
+        run: |
+          python - <<'PY'
+          import json
+          import math
+          from pathlib import Path
+
+          path = Path(
+              "melodia_unseen_language_output/unseen_language_report.json"
+          )
+
+          assert path.is_file()
+
+          report = json.loads(
+              path.read_text(encoding="utf-8")
           )
 
           assert report["total"] == 25
@@ -128,13 +163,17 @@ jobs:
           assert math.isfinite(accuracy)
           assert 0.0 <= accuracy <= 1.0
 
-          print("GENERALIZATION TEST COMPLETED")
+          for result in report["results"]:
+              assert isinstance(result["unknown_words"], list)
+              assert isinstance(result["known_words"], list)
+
+          print("UNSEEN-LANGUAGE TEST COMPLETED")
           print("Correct:", report["correct"])
           print("Total:", report["total"])
-          print("Generalization accuracy:", f"{accuracy:.2%}")
+          print("Accuracy:", f"{accuracy:.2%}")
           PY
 
-      - name: Save trained model and evaluation report
+      - name: Save trained model
         if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -143,7 +182,7 @@ jobs:
           retention-days: 30
           if-no-files-found: warn
 
-      - name: Save language generalization results
+      - name: Save generalization results
         if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -152,10 +191,65 @@ jobs:
           retention-days: 30
           if-no-files-found: warn
 
-      - name: Training and generalization summary
+      - name: Save unseen-language results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: melodia-unseen-language-results
+          path: melodia_unseen_language_output/
+          retention-days: 30
+          if-no-files-found: warn
+
+      - name: Write evaluation summary
         if: success()
         run: |
-          echo "## MELODIA Geometric Intelligence" >> "$GITHUB_STEP_SUMMARY"
-          echo "Neural training completed." >> "$GITHUB_STEP_SUMMARY"
-          echo "Language generalization test completed." >> "$GITHUB_STEP_SUMMARY"
-          echo "Model and evaluation reports uploaded." >> "$GITHUB_STEP_SUMMARY"
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          files = [
+              (
+                  "Training evaluation",
+                  "melodia_model_output/training_report.json",
+                  "final_accuracy"
+              ),
+              (
+                  "Language generalization",
+                  "melodia_generalization_output/generalization_report.json",
+                  "accuracy"
+              ),
+              (
+                  "Unseen-language evaluation",
+                  "melodia_unseen_language_output/unseen_language_report.json",
+                  "accuracy"
+              )
+          ]
+
+          lines = [
+              "## MELODIA Geometric Intelligence",
+              "",
+              "| Evaluation | Accuracy |",
+              "|---|---:|"
+          ]
+
+          for label, filename, field in files:
+              report = json.loads(
+                  Path(filename).read_text(encoding="utf-8")
+              )
+              accuracy = report[field]
+              lines.append(
+                  f"| {label} | {accuracy:.2%} |"
+              )
+
+          lines.extend([
+              "",
+              "All three reports were generated.",
+              "Test completion does not imply general intelligence."
+          ])
+
+          summary = os.environ["GITHUB_STEP_SUMMARY"]
+
+          with open(summary, "a", encoding="utf-8") as file:
+              file.write("\n".join(lines) + "\n")
+          PY
