@@ -1,0 +1,219 @@
+name: MELODIA AI - Cinematic Transition Validation
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - "melodia_cinematic_transition_engine.py"
+      - ".github/workflows/cinematic-transition-validation.yml"
+
+jobs:
+  validate-cinematic-transitions:
+    name: Validate MELODIA V2.2
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Run transition validation
+        shell: bash
+        run: |
+          python - <<'PY'
+          import copy
+          import json
+          import subprocess
+          import sys
+          from pathlib import Path
+          from melodia_cinematic_transition_engine import (
+              VERSION, TRANSITIONS, plan_cinematic_transitions,
+          )
+
+          output = Path("melodia_cinematic_transition_validation")
+          output.mkdir(exist_ok=True)
+          results = []
+
+          def scene(ids, duration=10.0, camera="static"):
+              return {
+                  "objects": [{"id": item} for item in ids],
+                  "duration": duration,
+                  "camera_movement": camera,
+              }
+
+          def plan(scenes=None, **kwargs):
+              if scenes is None:
+                  scenes = [scene(["tree"]), scene(["tree", "flower"])]
+              return plan_cinematic_transitions(scenes, **kwargs)
+
+          def check(condition, message):
+              if not condition:
+                  raise AssertionError(message)
+
+          def reject(scenes, **kwargs):
+              try:
+                  plan(scenes, **kwargs)
+              except ValueError:
+                  return
+              raise AssertionError("Expected ValueError")
+
+          def test(name, fn):
+              try:
+                  fn()
+                  results.append({"test": name, "status": "pass"})
+                  print("PASS:", name)
+              except Exception as exc:
+                  results.append({"test": name, "status": "fail", "error": repr(exc)})
+                  print("FAIL:", name, repr(exc))
+
+          def basic():
+              result = plan()
+              check(result["version"] == VERSION, "Version")
+              check(result["scene_count"] == 2, "Scene count")
+              check(result["transition_count"] == 1, "Transition count")
+          test("basic_generation", basic)
+
+          test("single_scene", lambda: check(
+              plan([scene(["tree"])])["transition_count"] == 0,
+              "Single scene should have no transition"))
+
+          test("shared_object_crossfade", lambda: check(
+              plan()["transitions"][0]["transition"] == "crossfade",
+              "Expected crossfade"))
+
+          test("no_shared_object_fade_black", lambda: check(
+              plan([scene(["tree"]), scene(["house"])])["transitions"][0]["transition"]
+              == "fade_through_black", "Expected fade through black"))
+
+          test("camera_change_dissolve", lambda: check(
+              plan([scene(["tree"], camera="static"),
+                    scene(["tree"], camera="pan_left")])["transitions"][0]["transition"]
+              == "dissolve", "Expected dissolve"))
+
+          def all_overrides():
+              for name in TRANSITIONS:
+                  result = plan(preferred_transition=name)
+                  check(result["transitions"][0]["transition"] == name,
+                        "Override failed: " + name)
+          test("all_explicit_transitions", all_overrides)
+
+          def cut():
+              result = plan(preferred_transition="cut")
+              check(result["transitions"][0]["duration_seconds"] == 0,
+                    "Cut must have zero overlap")
+              check(result["total_output_duration_seconds"] == 20,
+                    "Cut should preserve source duration")
+          test("cut_has_no_overlap", cut)
+
+          def timing():
+              result = plan([scene(["a"], 10), scene(["a"], 8), scene(["a"], 6)])
+              check(result["total_source_duration_seconds"] == 24, "Source duration")
+              check(result["total_output_duration_seconds"] == 22, "Output duration")
+              check([t["start_seconds"] for t in result["transitions"]]
+                    == [9, 16], "Transition start times")
+          test("three_scene_timing", timing)
+
+          test("short_scene_overlap_cap", lambda: check(
+              plan([scene(["a"], 0.5), scene(["a"], 0.5)])
+              ["transitions"][0]["duration_seconds"] == 0.25,
+              "Overlap must be capped"))
+
+          def identities():
+              transition = plan()["transitions"][0]
+              check(transition["shared_objects"] == ["tree"], "Shared")
+              check(transition["entering_objects"] == ["flower"], "Entering")
+              check(transition["exiting_objects"] == [], "Exiting")
+              check(transition["preserves_identity"], "Identity flag")
+          test("object_identity_changes", identities)
+
+          def exits():
+              transition = plan([scene(["tree", "house"]), scene(["tree"])])["transitions"][0]
+              check(transition["exiting_objects"] == ["house"], "Exit")
+          test("exiting_objects", exits)
+
+          def continuity_id():
+              scenes = [
+                  {"objects": [{"id": "tree1", "continuity_id": "hero"}]},
+                  {"objects": [{"id": "tree2", "continuity_id": "hero"}]},
+              ]
+              check(plan(scenes)["transitions"][0]["shared_objects"] == ["hero"],
+                    "Continuity identity")
+          test("continuity_identity_override", continuity_id)
+
+          def camera_metadata():
+              transition = plan([
+                  scene(["a"], camera="pan_left"),
+                  scene(["a"], camera="zoom_in"),
+              ])["transitions"][0]
+              check(transition["camera_from"] == "pan_left", "Camera from")
+              check(transition["camera_to"] == "zoom_in", "Camera to")
+          test("camera_metadata", camera_metadata)
+
+          def deterministic():
+              scenes = [scene(["a"]), scene(["a"])]
+              check(plan(scenes, seed=77) == plan(scenes, seed=77), "Not reproducible")
+          test("seed_reproducibility", deterministic)
+
+          def immutable():
+              scenes = [scene(["a"]), scene(["a"])]
+              original = copy.deepcopy(scenes)
+              plan(scenes)
+              check(scenes == original, "Input modified")
+          test("source_immutability", immutable)
+
+          test("reject_empty_list", lambda: reject([]))
+          test("reject_non_list", lambda: reject("invalid"))
+          test("reject_invalid_scene", lambda: reject([{}]))
+          test("reject_invalid_object", lambda: reject([{"objects": [None]}]))
+          test("reject_duplicate_identity", lambda: reject([scene(["a", "a"])]))
+          test("reject_empty_identity", lambda: reject([scene([""])]))
+          test("reject_negative_duration", lambda: reject([scene(["a"], -1)]))
+          test("reject_zero_duration", lambda: reject([scene(["a"], 0)]))
+          test("reject_invalid_camera", lambda: reject([scene(["a"], camera="")]))
+          test("reject_bad_transition", lambda: reject(preferred_transition="wipe"))
+          test("reject_negative_overlap", lambda: reject(transition_duration=-1))
+          test("reject_large_overlap", lambda: reject(transition_duration=4))
+          test("reject_boolean_seed", lambda: reject(seed=True))
+          test("reject_string_seed", lambda: reject(seed="77"))
+
+          def cli():
+              source = output / "input.json"
+              destination = output / "transition_plan.json"
+              source.write_text(json.dumps({"scenes": [scene(["a"]), scene(["a"])]}),
+                                encoding="utf-8")
+              subprocess.run([
+                  sys.executable, "melodia_cinematic_transition_engine.py",
+                  "--input", str(source), "--output", str(destination),
+                  "--duration", "1", "--seed", "77",
+              ], check=True, capture_output=True, text=True)
+              result = json.loads(destination.read_text(encoding="utf-8"))
+              check(result["transition_count"] == 1, "CLI count")
+              check(result["seed"] == 77, "CLI seed")
+          test("command_line_export", cli)
+
+          report = {
+              "project": "MELODIA AI", "version": VERSION,
+              "suite": "cinematic_transition_validation",
+              "total_tests": len(results),
+              "passed": sum(r["status"] == "pass" for r in results),
+              "failed": sum(r["status"] == "fail" for r in results),
+              "results": results,
+          }
+          (output / "validation_report.json").write_text(
+              json.dumps(report, indent=2), encoding="utf-8")
+          print("MELODIA V2.2 VALIDATION SUMMARY")
+          print(json.dumps({k: report[k] for k in ("total_tests", "passed", "failed")}, indent=2))
+          if report["failed"]:
+              sys.exit(1)
+          PY
+      - name: Upload validation artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: melodia-cinematic-transition-validation
+          path: melodia_cinematic_transition_validation/
+          if-no-files-found: warn
+          retention-days: 30
