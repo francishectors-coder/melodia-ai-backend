@@ -16,8 +16,8 @@ permissions:
   contents: read
 
 jobs:
-  validate-relationships:
-    name: Validate Five Object Categories
+  validate-multiscale-relationships:
+    name: Validate Five Categories at Three Scales
     runs-on: ubuntu-latest
     timeout-minutes: 10
 
@@ -36,17 +36,24 @@ jobs:
             melodia_geometric_object_learner.py \
             melodia_component_relationship_learner.py
 
-      - name: Generate all five object categories
+      - name: Generate fifteen object layouts
         run: |
           set -e
 
           for object in tree house vehicle animal flower
           do
-            echo "Generating: $object"
+            for setting in "50:0.5" "100:1.0" "150:1.5"
+            do
+              label="${setting%%:*}"
+              scale="${setting#*:}"
 
-            python melodia_component_relationship_learner.py \
-              --object "$object" \
-              --output "melodia_relationship_tests/$object"
+              echo "Generating $object at ${label}%"
+
+              python melodia_component_relationship_learner.py \
+                --object "$object" \
+                --scale "$scale" \
+                --output "melodia_relationship_tests/${object}/scale_${label}"
+            done
           done
 
       - name: Test unknown object handling
@@ -55,7 +62,7 @@ jobs:
             --object unknown_object \
             --output melodia_relationship_tests/unknown
 
-      - name: Validate JSON and SVG outputs
+      - name: Validate scaling and attachment consistency
         run: |
           python - <<'PY'
           import json
@@ -66,167 +73,197 @@ jobs:
           root = Path("melodia_relationship_tests")
 
           categories = [
-              "tree",
-              "house",
-              "vehicle",
-              "animal",
-              "flower"
+              "tree", "house", "vehicle", "animal", "flower"
           ]
 
+          scales = {
+              "50": 0.5,
+              "100": 1.0,
+              "150": 1.5
+          }
+
+          tolerance = 0.00001
           results = []
 
-          for category in categories:
-              folder = root / category
+          def close(a, b):
+              return math.isclose(
+                  a, b, rel_tol=tolerance, abs_tol=tolerance
+              )
 
-              model_path = folder / "relationship_model.json"
-              data_path = folder / "relationship_representation.json"
-              svg_path = folder / "relationship_preview.svg"
+          def load_representation(category, label):
+              folder = root / category / f"scale_{label}"
 
-              for path in (model_path, data_path, svg_path):
+              for filename in (
+                  "relationship_model.json",
+                  "relationship_representation.json",
+                  "relationship_preview.svg"
+              ):
+                  path = folder / filename
                   assert path.is_file(), f"Missing: {path}"
                   assert path.stat().st_size > 0, f"Empty: {path}"
 
-              model = json.loads(
-                  model_path.read_text(encoding="utf-8")
-              )
-
               data = json.loads(
-                  data_path.read_text(encoding="utf-8")
+                  (folder / "relationship_representation.json")
+                  .read_text(encoding="utf-8")
               )
 
-              assert isinstance(model, dict)
-              assert isinstance(data, dict)
+              assert data.get("status") == "generated"
+              assert data.get("object") == category
 
-              assert data.get("status") == "generated", (
-                  f"{category}: generation failed"
+              svg = ET.parse(
+                  folder / "relationship_preview.svg"
+              ).getroot()
+
+              assert svg.tag.endswith("svg")
+
+              return data, svg
+
+          for category in categories:
+              baseline, _ = load_representation(
+                  category, "100"
               )
 
-              # Check every numeric value in the representation.
-              def validate_numbers(value):
-                  if isinstance(value, dict):
-                      for child in value.values():
-                          validate_numbers(child)
-
-                  elif isinstance(value, list):
-                      for child in value:
-                          validate_numbers(child)
-
-                  elif isinstance(value, float):
-                      assert math.isfinite(value), (
-                          f"{category}: non-finite number"
-                      )
-
-              validate_numbers(model)
-              validate_numbers(data)
-
-              # Check SVG structure and geometry.
-              svg = ET.parse(svg_path).getroot()
-
-              assert svg.tag.endswith("svg"), (
-                  f"{category}: invalid SVG root"
-              )
-
-              shapes = []
-
-              for element in svg.iter():
-                  tag = element.tag.split("}")[-1]
-
-                  if tag in (
-                      "circle",
-                      "ellipse",
-                      "rect",
-                      "polygon",
-                      "path"
-                  ):
-                      shapes.append(element)
-
-                  for attribute in (
-                      "x", "y", "cx", "cy",
-                      "rx", "ry", "r",
-                      "width", "height"
-                  ):
-                      raw = element.get(attribute)
-
-                      if raw is None:
-                          continue
-
-                      value = float(raw)
-
-                      assert math.isfinite(value), (
-                          f"{category}: invalid SVG coordinate"
-                      )
-
-                      if attribute in (
-                          "rx", "ry", "r",
-                          "width", "height"
-                      ):
-                          assert value >= 0, (
-                              f"{category}: negative dimension"
-                          )
-
-              assert len(shapes) >= 2, (
-                  f"{category}: insufficient SVG shapes"
-              )
-
-              result = {
-                  "object": category,
-                  "status": "pass",
-                  "svg_shape_count": len(shapes),
-                  "files_verified": 3
+              base_parts = {
+                  part["role"]: part
+                  for part in baseline["components"]
               }
 
-              results.append(result)
-
-              print(
-                  "PASS:",
-                  category,
-                  "| SVG shapes:",
-                  len(shapes)
+              assert len(base_parts) >= 2
+              assert len(base_parts) == len(
+                  baseline["components"]
               )
 
-          # Unknown-object output must be explicit.
-          unknown_path = (
-              root
-              / "unknown"
-              / "relationship_representation.json"
-          )
+              for label, scale in scales.items():
+                  data, svg = load_representation(
+                      category, label
+                  )
 
-          assert unknown_path.is_file(), (
-              "Unknown-object representation missing"
+                  assert close(data["scale"], scale)
+
+                  parts = {
+                      part["role"]: part
+                      for part in data["components"]
+                  }
+
+                  assert set(parts) == set(base_parts)
+
+                  for role, part in parts.items():
+                      original = base_parts[role]
+
+                      assert part["parent"] == original["parent"]
+                      assert part["shape"] == original["shape"]
+
+                      for field in (
+                          "x", "y", "width", "height"
+                      ):
+                          assert math.isfinite(part[field]), (
+                              category, label, role, field
+                          )
+
+                      assert close(
+                          part["width"],
+                          original["width"] * scale
+                      )
+
+                      assert close(
+                          part["height"],
+                          original["height"] * scale
+                      )
+
+                      parent_role = part["parent"]
+
+                      if parent_role is not None:
+                          assert parent_role in parts
+
+                          parent = parts[parent_role]
+                          base_parent = base_parts[parent_role]
+
+                          for axis in ("x", "y"):
+                              offset = (
+                                  part[axis] - parent[axis]
+                              )
+
+                              base_offset = (
+                                  original[axis]
+                                  - base_parent[axis]
+                              )
+
+                              assert close(
+                                  offset,
+                                  base_offset * scale
+                              ), (
+                                  category, label, role, axis
+                              )
+
+                  # Check that every circle is actually
+                  # represented by an SVG circle element.
+                  svg_circles = [
+                      element
+                      for element in svg.iter()
+                      if element.tag.split("}")[-1] == "circle"
+                  ]
+
+                  expected_circles = sum(
+                      part["shape"] == "circle"
+                      for part in parts.values()
+                  )
+
+                  assert len(svg_circles) == expected_circles
+
+                  for circle in svg_circles:
+                      radius = float(circle.attrib["r"])
+                      assert math.isfinite(radius)
+                      assert radius > 0
+
+                  results.append({
+                      "object": category,
+                      "scale": scale,
+                      "components": len(parts),
+                      "status": "pass"
+                  })
+
+                  print(
+                      "PASS:",
+                      category,
+                      f"{scale:.1f}x",
+                      "| components:",
+                      len(parts)
+                  )
+
+          unknown_path = (
+              root / "unknown"
+              / "relationship_representation.json"
           )
 
           unknown = json.loads(
               unknown_path.read_text(encoding="utf-8")
           )
 
-          assert unknown.get("status") == "unknown", (
-              "Unknown object was not rejected"
-          )
+          assert unknown.get("status") == "unknown"
 
           report = {
               "project": "MELODIA AI",
-              "test": "component_relationship_validation",
-              "categories_tested": len(categories),
+              "test": "multiscale_component_relationships",
+              "categories": len(categories),
+              "scales_per_category": len(scales),
+              "total_layouts": len(results),
               "unknown_object_handling": "pass",
               "results": results
           }
 
-          report_path = root / "validation_report.json"
-
-          report_path.write_text(
+          (root / "multiscale_validation_report.json").write_text(
               json.dumps(report, indent=2),
               encoding="utf-8"
           )
 
-          print("ALL FIVE CATEGORY TESTS PASSED")
-          print("UNKNOWN OBJECT HANDLING PASSED")
+          print("ALL 15 MULTI-SCALE TESTS PASSED")
           PY
 
-      - name: Upload relationship learning artifacts
+      - name: Upload multi-scale artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: melodia-five-category-relationships
+          name: melodia-multiscale-relationships
           path: melodia_relationship_tests/
           retention-days: 30
           if-no-files-found: warn
@@ -234,15 +271,12 @@ jobs:
       - name: Write workflow summary
         if: success()
         run: |
-          echo "## MELODIA AI - Relationship Validation" >> "$GITHUB_STEP_SUMMARY"
+          echo "## MELODIA Multi-Scale Validation" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "Five object categories generated and validated." >> "$GITHUB_STEP_SUMMARY"
+          echo "15 layouts validated successfully." >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "- Tree" >> "$GITHUB_STEP_SUMMARY"
-          echo "- House" >> "$GITHUB_STEP_SUMMARY"
-          echo "- Vehicle" >> "$GITHUB_STEP_SUMMARY"
-          echo "- Animal" >> "$GITHUB_STEP_SUMMARY"
-          echo "- Flower" >> "$GITHUB_STEP_SUMMARY"
+          echo "Five categories at 50%, 100%, and 150% scale." >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "Unknown-object handling validated." >> "$GITHUB_STEP_SUMMARY"
-          echo "SVG previews saved for inspection." >> "$GITHUB_STEP_SUMMARY"
+          echo "Component sizes and parent-relative offsets verified." >> "$GITHUB_STEP_SUMMARY"
+          echo "SVG circle elements verified." >> "$GITHUB_STEP_SUMMARY"
+          echo "Unknown-object handling verified." >> "$GITHUB_STEP_SUMMARY"
