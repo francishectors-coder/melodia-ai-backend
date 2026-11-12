@@ -53,7 +53,7 @@ jobs:
               if not condition:
                   raise AssertionError(message)
 
-          def reject(scenes, **kwargs):
+          def reject(scenes=None, **kwargs):
               try:
                   plan(scenes, **kwargs)
               except ValueError:
