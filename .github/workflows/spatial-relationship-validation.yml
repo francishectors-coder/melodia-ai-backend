@@ -1,0 +1,596 @@
+
+name: MELODIA AI - Spatial Relationship Validation
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - "melodia_spatial_relationship_engine.py"
+      - "melodia_prompt_scene_generator.py"
+      - "melodia_automatic_structure_learner.py"
+      - "melodia_component_relationship_learner.py"
+      - "melodia_geometric_object_learner.py"
+      - ".github/workflows/spatial-relationship-validation.yml"
+
+jobs:
+  validate-spatial-relationships:
+    name: Validate Spatial Relationships V1.7
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Run spatial relationship tests
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          import math
+          import subprocess
+          import sys
+          import xml.etree.ElementTree as ET
+          from pathlib import Path
+
+          from melodia_geometric_object_learner import EXAMPLES
+          from melodia_automatic_structure_learner import learn_all
+          from melodia_spatial_relationship_engine import (
+              VERSION,
+              identify_mentions,
+              identify_relations,
+              construct_layout,
+              generate_spatial_scene,
+              render_scene_svg,
+          )
+
+          OUTPUT = Path("melodia_spatial_validation")
+          OUTPUT.mkdir(parents=True, exist_ok=True)
+
+          learned = learn_all(EXAMPLES)
+          results = []
+
+          def check(condition, message):
+              if not condition:
+                  raise AssertionError(message)
+
+          def test(name, function):
+              try:
+                  details = function()
+                  results.append({
+                      "test": name,
+                      "status": "pass",
+                      "details": details,
+                  })
+                  print("PASS:", name)
+              except Exception as exc:
+                  results.append({
+                      "test": name,
+                      "status": "fail",
+                      "error": str(exc),
+                  })
+                  print("FAIL:", name, str(exc))
+
+          def expect_value_error(function):
+              try:
+                  function()
+              except ValueError:
+                  return
+
+              raise AssertionError(
+                  "Expected ValueError was not raised"
+              )
+
+          def verify_scene(scene):
+              check(
+                  scene["status"] == "generated",
+                  "Scene generation failed",
+              )
+
+              check(
+                  scene["version"] == VERSION,
+                  "Incorrect engine version",
+              )
+
+              ids = set()
+
+              for obj in scene["objects"]:
+                  check(
+                      obj["id"] not in ids,
+                      "Duplicate object ID",
+                  )
+
+                  ids.add(obj["id"])
+
+                  check(
+                      bool(obj["components"]),
+                      "Object has no components",
+                  )
+
+                  for coordinate in ("x", "y"):
+                      value = obj["center"][coordinate]
+
+                      check(
+                          math.isfinite(value),
+                          "Non-finite object center",
+                      )
+
+                  for part in obj["components"]:
+                      for field in (
+                          "x",
+                          "y",
+                          "width",
+                          "height",
+                      ):
+                          check(
+                              math.isfinite(part[field]),
+                              "Non-finite component geometry",
+                          )
+
+                      check(
+                          part["width"] > 0
+                          and part["height"] > 0,
+                          "Invalid component dimensions",
+                      )
+
+              for relation in scene["relationships"]:
+                  check(
+                      relation["subject"] in ids,
+                      "Unknown relationship subject",
+                  )
+
+                  check(
+                      relation["target"] in ids,
+                      "Unknown relationship target",
+                  )
+
+              return {
+                  "objects": len(scene["objects"]),
+                  "relationships": len(
+                      scene["relationships"]
+                  ),
+              }
+
+          def verify_svg(scene, svg):
+              root = ET.fromstring(svg)
+
+              ns = "{http://www.w3.org/2000/svg}"
+
+              check(
+                  root.tag == ns + "svg",
+                  "Invalid SVG root",
+              )
+
+              check(
+                  root.get("width") == "1024",
+                  "Incorrect SVG width",
+              )
+
+              check(
+                  root.get("height") == "576",
+                  "Incorrect SVG height",
+              )
+
+              object_ids = {
+                  element.get("id")
+                  for element in root.iter(ns + "g")
+                  if element.get("id")
+              }
+
+              expected_ids = {
+                  obj["id"]
+                  for obj in scene["objects"]
+              }
+
+              check(
+                  expected_ids.issubset(object_ids),
+                  "SVG object groups missing",
+              )
+
+          def test_direction(
+              name,
+              prompt,
+              expected_relation,
+              axis,
+              comparison,
+          ):
+              def execute():
+                  scene = generate_spatial_scene(
+                      prompt,
+                      learned,
+                      seed=1337,
+                  )
+
+                  verify_scene(scene)
+
+                  check(
+                      len(scene["objects"]) == 2,
+                      "Expected two objects",
+                  )
+
+                  check(
+                      len(scene["relationships"]) == 1,
+                      "Expected one relationship",
+                  )
+
+                  relation = scene["relationships"][0]
+
+                  check(
+                      relation["relation"]
+                      == expected_relation,
+                      "Incorrect relationship",
+                  )
+
+                  subject_id = relation["subject"]
+                  target_id = relation["target"]
+
+                  objects = {
+                      obj["id"]: obj
+                      for obj in scene["objects"]
+                  }
+
+                  subject = objects[subject_id][
+                      "center"
+                  ][axis]
+
+                  target = objects[target_id][
+                      "center"
+                  ][axis]
+
+                  check(
+                      comparison(subject, target),
+                      "Spatial direction incorrect",
+                  )
+
+                  return {
+                      "relation": expected_relation,
+                      "subject_coordinate": subject,
+                      "target_coordinate": target,
+                  }
+
+              test(name, execute)
+
+          test_direction(
+              "left_of",
+              "A tree to the left of a house",
+              "left_of",
+              "x",
+              lambda a, b: a < b,
+          )
+
+          test_direction(
+              "right_of",
+              "A tree to the right of a house",
+              "right_of",
+              "x",
+              lambda a, b: a > b,
+          )
+
+          test_direction(
+              "above",
+              "A flower above a vehicle",
+              "above",
+              "y",
+              lambda a, b: a < b,
+          )
+
+          test_direction(
+              "below",
+              "An animal below a tree",
+              "below",
+              "y",
+              lambda a, b: a > b,
+          )
+
+          test_direction(
+              "beside",
+              "A flower beside a house",
+              "beside",
+              "x",
+              lambda a, b: a > b,
+          )
+
+          test_direction(
+              "near",
+              "An animal near a tree",
+              "near",
+              "x",
+              lambda a, b: a > b,
+          )
+
+          def test_multi_relation():
+              prompt = (
+                  "A tree to the left of a house "
+                  "and a flower above a vehicle"
+              )
+
+              scene = generate_spatial_scene(
+                  prompt,
+                  learned,
+              )
+
+              verify_scene(scene)
+
+              check(
+                  len(scene["objects"]) == 4,
+                  "Expected four objects",
+              )
+
+              check(
+                  len(scene["relationships"]) == 2,
+                  "Expected two relationships",
+              )
+
+              return {
+                  "objects": 4,
+                  "relationships": 2,
+              }
+
+          test(
+              "multiple_relationships",
+              test_multi_relation,
+          )
+
+          def test_reproducibility():
+              prompt = (
+                  "A tree beside a house"
+              )
+
+              first = generate_spatial_scene(
+                  prompt,
+                  learned,
+                  seed=1234,
+                  variation=0.8,
+              )
+
+              second = generate_spatial_scene(
+                  prompt,
+                  learned,
+                  seed=1234,
+                  variation=0.8,
+              )
+
+              check(
+                  first == second,
+                  "Identical seeds produced different scenes",
+              )
+
+              return {
+                  "reproducible": True,
+              }
+
+          test(
+              "seed_reproducibility",
+              test_reproducibility,
+          )
+
+          def test_svg():
+              scene = generate_spatial_scene(
+                  "A tree to the left of a house",
+                  learned,
+              )
+
+              verify_scene(scene)
+
+              svg = render_scene_svg(scene)
+
+              verify_svg(scene, svg)
+
+              (
+                  OUTPUT / "spatial_preview.svg"
+              ).write_text(
+                  svg,
+                  encoding="utf-8",
+              )
+
+              (
+                  OUTPUT / "spatial_scene.json"
+              ).write_text(
+                  json.dumps(scene, indent=2),
+                  encoding="utf-8",
+              )
+
+              return {
+                  "svg": "valid",
+              }
+
+          test(
+              "svg_rendering",
+              test_svg,
+          )
+
+          def test_unsupported():
+              scene = generate_spatial_scene(
+                  "A mountain beside an ocean",
+                  learned,
+              )
+
+              check(
+                  scene["status"] == "unsupported",
+                  "Unsupported prompt was accepted",
+              )
+
+              return {
+                  "status": "unsupported",
+              }
+
+          test(
+              "unsupported_prompt",
+              test_unsupported,
+          )
+
+          def test_empty_prompt():
+              expect_value_error(
+                  lambda: generate_spatial_scene(
+                      "",
+                      learned,
+                  )
+              )
+
+          test(
+              "reject_empty_prompt",
+              test_empty_prompt,
+          )
+
+          def test_invalid_variation():
+              expect_value_error(
+                  lambda: generate_spatial_scene(
+                      "A tree beside a house",
+                      learned,
+                      variation=2.0,
+                  )
+              )
+
+          test(
+              "reject_invalid_variation",
+              test_invalid_variation,
+          )
+
+          def test_repeated_reference():
+              prompt = (
+                  "A tree to the left of a house "
+                  "and a flower to the right of the house"
+              )
+
+              scene = generate_spatial_scene(
+                  prompt,
+                  learned,
+              )
+
+              verify_scene(scene)
+
+              categories = [
+                  obj["category"]
+                  for obj in scene["objects"]
+              ]
+
+              house_count = categories.count(
+                  "house"
+              )
+
+              check(
+                  house_count == 1,
+                  (
+                      "Repeated house reference created "
+                      f"{house_count} house objects; expected 1"
+                  ),
+              )
+
+              check(
+                  len(scene["objects"]) == 3,
+                  "Expected three unique objects",
+              )
+
+              return {
+                  "unique_objects": 3,
+                  "house_count": house_count,
+              }
+
+          test(
+              "repeated_reference_resolution",
+              test_repeated_reference,
+          )
+
+          def test_cli():
+              folder = OUTPUT / "cli_output"
+
+              subprocess.run(
+                  [
+                      sys.executable,
+                      "melodia_spatial_relationship_engine.py",
+                      "--prompt",
+                      "A tree to the left of a house",
+                      "--output",
+                      str(folder),
+                  ],
+                  check=True,
+                  capture_output=True,
+                  text=True,
+              )
+
+              json_path = folder / "spatial_scene.json"
+              svg_path = folder / "spatial_scene.svg"
+
+              check(
+                  json_path.exists(),
+                  "CLI JSON missing",
+              )
+
+              check(
+                  svg_path.exists(),
+                  "CLI SVG missing",
+              )
+
+              scene = json.loads(
+                  json_path.read_text(
+                      encoding="utf-8"
+                  )
+              )
+
+              verify_scene(scene)
+
+              verify_svg(
+                  scene,
+                  svg_path.read_text(
+                      encoding="utf-8"
+                  ),
+              )
+
+              return {
+                  "cli": "passed",
+              }
+
+          test(
+              "command_line_generation",
+              test_cli,
+          )
+
+          report = {
+              "project": "MELODIA AI",
+              "version": VERSION,
+              "suite": "spatial_relationship_validation",
+              "total_tests": len(results),
+              "passed": sum(
+                  item["status"] == "pass"
+                  for item in results
+              ),
+              "failed": sum(
+                  item["status"] == "fail"
+                  for item in results
+              ),
+              "results": results,
+          }
+
+          (
+              OUTPUT / "validation_report.json"
+          ).write_text(
+              json.dumps(report, indent=2),
+              encoding="utf-8",
+          )
+
+          print(
+              json.dumps({
+                  "total": report["total_tests"],
+                  "passed": report["passed"],
+                  "failed": report["failed"],
+              }, indent=2)
+          )
+
+          if report["failed"]:
+              sys.exit(1)
+          PY
+
+      - name: Upload validation artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: melodia-spatial-relationship-validation
+          path: melodia_spatial_validation/
+          if-no-files-found: warn
+          retention-days: 30
