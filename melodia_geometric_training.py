@@ -1,10 +1,12 @@
 
 """
 MELODIA AI - Geometric Training Data Generator
-Version 1.1
+Version 1.2
 
-Generates reproducible text-to-geometry training data
-with validated spatial relationships.
+Generates reproducible, varied text-to-geometry
+training data with validated spatial relationships.
+
+Preserves the V1.1 JSONL schema and CLI interface.
 
 Python standard library only.
 """
@@ -38,6 +40,89 @@ ENVIRONMENTS = [
     "forest", "riverbank", "village",
     "desert", "mountain", "open field",
     "night sky", "seaside"
+]
+
+OBJECT_NAMES = [
+    "circle", "triangle", "rectangle",
+    "ellipse", "polygon", "shape",
+    "figure", "geometric object"
+]
+
+# Some vocabulary is deliberately held out so that
+# the generalization test remains meaningful.
+RELATION_PHRASES = {
+    "above": [
+        "above",
+        "over",
+        "higher than",
+        "positioned over",
+        "located above",
+        "suspended over",
+        "raised above"
+    ],
+    "below": [
+        "below",
+        "under",
+        "beneath",
+        "lower than",
+        "positioned below",
+        "located under",
+        "directly beneath"
+    ],
+    "beside": [
+        "beside",
+        "next to",
+        "alongside",
+        "adjacent to",
+        "at the side of",
+        "positioned beside",
+        "located next to"
+    ],
+    "inside": [
+        "inside",
+        "within",
+        "contained in",
+        "enclosed within",
+        "positioned inside",
+        "located within",
+        "held inside"
+    ],
+    "overlapping": [
+        "overlapping",
+        "intersecting",
+        "partially covering",
+        "crossing",
+        "sharing space with",
+        "overlapping with",
+        "intersecting with"
+    ]
+}
+
+TEMPLATES = [
+    "In a {environment}, a {first_color} {first_name} "
+    "is {phrase} a {second_color} {second_name}.",
+
+    "A {first_color} {first_name} is {phrase} "
+    "a {second_color} {second_name}.",
+
+    "The {first_color} {first_name} appears {phrase} "
+    "the {second_color} {second_name}.",
+
+    "Imagine a {first_color} {first_name} {phrase} "
+    "a {second_color} {second_name}.",
+
+    "Draw a {first_color} {first_name} {phrase} "
+    "a {second_color} {second_name}.",
+
+    "A scene shows a {first_color} {first_name} "
+    "{phrase} a {second_color} {second_name}.",
+
+    "Near the {environment}, the {first_color} "
+    "{first_name} is {phrase} the {second_color} "
+    "{second_name}.",
+
+    "Place the {first_color} {first_name} "
+    "{phrase} the {second_color} {second_name}."
 ]
 
 
@@ -109,7 +194,7 @@ def choose_positions(rng, relation):
 
 
 def validate_relationship(scene):
-    """Check the anchor geometry matches the relation."""
+    """Check anchor geometry matches the relation."""
 
     first, second = scene["objects"]
     relation = scene["relationship"]["relation"]
@@ -146,7 +231,7 @@ def validate_relationship(scene):
 
 
 def validate_bounds(scene):
-    """Check object anchors and components remain on canvas."""
+    """Check anchors and components remain on canvas."""
 
     for obj in scene["objects"]:
         if not (0 <= obj["x"] < WIDTH):
@@ -168,8 +253,33 @@ def validate_bounds(scene):
     return True
 
 
-def create_example(rng, index):
-    relation = rng.choice(RELATIONS)
+def create_prompt(rng, relation, environment,
+                  first_color, second_color):
+    """Generate varied language for a spatial relation."""
+
+    phrase = rng.choice(
+        RELATION_PHRASES[relation]
+    )
+
+    first_name = rng.choice(OBJECT_NAMES)
+    second_name = rng.choice(OBJECT_NAMES)
+
+    template = rng.choice(TEMPLATES)
+
+    return template.format(
+        environment=environment,
+        first_color=first_color,
+        second_color=second_color,
+        first_name=first_name,
+        second_name=second_name,
+        phrase=phrase
+    )
+
+
+def create_example(rng, index, relation=None):
+    if relation is None:
+        relation = rng.choice(RELATIONS)
+
     environment = rng.choice(ENVIRONMENTS)
 
     first_position, second_position = choose_positions(
@@ -202,10 +312,12 @@ def create_example(rng, index):
         second_color
     )
 
-    prompt = (
-        f"In a {environment}, a {first_color} "
-        f"geometric object is {relation} "
-        f"a {second_color} geometric object."
+    prompt = create_prompt(
+        rng,
+        relation,
+        environment,
+        first_color,
+        second_color
     )
 
     scene = {
@@ -246,10 +358,29 @@ def write_dataset(path, count, seed):
     )
 
     digest = hashlib.sha256()
+    relation_counts = {
+        relation: 0
+        for relation in RELATIONS
+    }
+
+    # Balance the five classes, including when
+    # the requested count is not divisible by five.
+    assignments = [
+        RELATIONS[index % len(RELATIONS)]
+        for index in range(count)
+    ]
+
+    rng.shuffle(assignments)
 
     with path.open("w", encoding="utf-8") as file:
-        for index in range(1, count + 1):
-            example = create_example(rng, index)
+        for index, relation in enumerate(
+            assignments, start=1
+        ):
+            example = create_example(
+                rng, index, relation
+            )
+
+            relation_counts[relation] += 1
 
             line = json.dumps(
                 example,
@@ -267,7 +398,8 @@ def write_dataset(path, count, seed):
         "path": str(path),
         "examples": count,
         "seed": seed,
-        "sha256": digest.hexdigest()
+        "sha256": digest.hexdigest(),
+        "relation_counts": relation_counts
     }
 
 
@@ -277,11 +409,21 @@ def validate_dataset(path, expected_count):
     with path.open("r", encoding="utf-8") as file:
         for line in file:
             record = json.loads(line)
-
             scene = record["scene"]
 
             assert validate_relationship(scene)
             assert validate_bounds(scene)
+
+            assert (
+                scene["relationship"]["relation"]
+                in RELATIONS
+            )
+
+            assert isinstance(
+                record["prompt"], str
+            )
+
+            assert record["prompt"].strip()
 
             count += 1
 
@@ -349,10 +491,12 @@ def main():
 
     manifest = {
         "project": "MELODIA Geometric Intelligence",
-        "version": "1.1",
+        "version": "1.2",
         "training": training,
         "evaluation": evaluation,
-        "status": "validated"
+        "status": "validated",
+        "language_variation": True,
+        "balanced_relationships": True
     }
 
     (output / "dataset_manifest.json").write_text(
@@ -360,9 +504,13 @@ def main():
         encoding="utf-8"
     )
 
-    print("MELODIA GEOMETRIC TRAINING DATA V1.1")
+    print("MELODIA GEOMETRIC TRAINING DATA V1.2")
     print("Training examples:", args.train_count)
     print("Evaluation examples:", args.eval_count)
+    print("Training class counts:",
+          training["relation_counts"])
+    print("Evaluation class counts:",
+          evaluation["relation_counts"])
     print("Spatial validation: PASSED")
     print("Output directory:", output)
 
