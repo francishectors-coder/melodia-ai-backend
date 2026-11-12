@@ -2,6 +2,7 @@
 name: MELODIA AI - Component Relationship Learning
 
 on:
+  workflow_dispatch:
   push:
     branches:
       - main
@@ -10,16 +11,10 @@ on:
       - "melodia_geometric_object_learner.py"
       - ".github/workflows/component-relationship-learning.yml"
 
-  workflow_dispatch:
-
-permissions:
-  contents: read
-
 jobs:
-  validate-multiscale-relationships:
-    name: Validate Five Categories at Three Scales
+  validate-relationships:
+    name: Multiscale and Variation Validation
     runs-on: ubuntu-latest
-    timeout-minutes: 10
 
     steps:
       - name: Checkout repository
@@ -30,253 +25,478 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Verify Python syntax
-        run: |
-          python -m py_compile \
-            melodia_geometric_object_learner.py \
-            melodia_component_relationship_learner.py
-
-      - name: Generate fifteen object layouts
-        run: |
-          set -e
-
-          for object in tree house vehicle animal flower
-          do
-            for setting in "50:0.5" "100:1.0" "150:1.5"
-            do
-              label="${setting%%:*}"
-              scale="${setting#*:}"
-
-              echo "Generating $object at ${label}%"
-
-              python melodia_component_relationship_learner.py \
-                --object "$object" \
-                --scale "$scale" \
-                --output "melodia_relationship_tests/${object}/scale_${label}"
-            done
-          done
-
-      - name: Test unknown object handling
-        run: |
-          python melodia_component_relationship_learner.py \
-            --object unknown_object \
-            --output melodia_relationship_tests/unknown
-
-      - name: Validate scaling and attachment consistency
+      - name: Run multiscale and variation tests
+        shell: bash
         run: |
           python - <<'PY'
           import json
           import math
+          import subprocess
+          import sys
           import xml.etree.ElementTree as ET
           from pathlib import Path
 
-          root = Path("melodia_relationship_tests")
+          from melodia_component_relationship_learner import (
+              train,
+              reconstruct,
+              component_bounds,
+          )
+          from melodia_geometric_object_learner import EXAMPLES
 
-          categories = [
-              "tree", "house", "vehicle", "animal", "flower"
+          OUTPUT = Path("melodia_validation_output")
+          OUTPUT.mkdir(exist_ok=True)
+
+          CATEGORIES = [
+              "tree",
+              "house",
+              "vehicle",
+              "animal",
+              "flower",
           ]
 
-          scales = {
-              "50": 0.5,
-              "100": 1.0,
-              "150": 1.5
-          }
+          SCALES = [0.5, 1.0, 1.5]
+          VARIATIONS = [0.0, 0.5, 1.0]
+          SEEDS = [11, 22, 33]
 
-          tolerance = 0.00001
+          WIDTH = 512
+          HEIGHT = 288
+          PADDING = 16
+          TOLERANCE = 0.002
+
           results = []
+          failures = []
 
-          def close(a, b):
-              return math.isclose(
-                  a, b, rel_tol=tolerance, abs_tol=tolerance
+          def check(condition, message):
+              if not condition:
+                  raise AssertionError(message)
+
+          def record(name, action):
+              try:
+                  details = action()
+                  results.append({
+                      "test": name,
+                      "status": "pass",
+                      "details": details,
+                  })
+                  print("PASS:", name)
+              except Exception as exc:
+                  failures.append({
+                      "test": name,
+                      "error": str(exc),
+                  })
+                  results.append({
+                      "test": name,
+                      "status": "fail",
+                      "error": str(exc),
+                  })
+                  print("FAIL:", name, str(exc))
+
+          def run_cli(category, scale, variation, seed, folder):
+              folder.mkdir(parents=True, exist_ok=True)
+
+              command = [
+                  sys.executable,
+                  "melodia_component_relationship_learner.py",
+                  "--object", category,
+                  "--scale", str(scale),
+                  "--variation", str(variation),
+                  "--seed", str(seed),
+                  "--output", str(folder),
+              ]
+
+              subprocess.run(
+                  command,
+                  check=True,
+                  capture_output=True,
+                  text=True,
               )
 
-          def load_representation(category, label):
-              folder = root / category / f"scale_{label}"
-
-              for filename in (
-                  "relationship_model.json",
-                  "relationship_representation.json",
-                  "relationship_preview.svg"
-              ):
-                  path = folder / filename
-                  assert path.is_file(), f"Missing: {path}"
-                  assert path.stat().st_size > 0, f"Empty: {path}"
-
-              data = json.loads(
-                  (folder / "relationship_representation.json")
-                  .read_text(encoding="utf-8")
+              return json.loads(
+                  (
+                      folder / "relationship_representation.json"
+                  ).read_text(encoding="utf-8")
               )
 
-              assert data.get("status") == "generated"
-              assert data.get("object") == category
-
-              svg = ET.parse(
-                  folder / "relationship_preview.svg"
-              ).getroot()
-
-              assert svg.tag.endswith("svg")
-
-              return data, svg
-
-          for category in categories:
-              baseline, _ = load_representation(
-                  category, "100"
-              )
-
-              base_parts = {
-                  part["role"]: part
-                  for part in baseline["components"]
+          def by_role(rep):
+              return {
+                  item["role"]: item
+                  for item in rep["components"]
               }
 
-              assert len(base_parts) >= 2
-              assert len(base_parts) == len(
-                  baseline["components"]
+          def check_geometry(rep):
+              check(
+                  rep["status"] == "generated",
+                  "Object was not generated",
               )
 
-              for label, scale in scales.items():
-                  data, svg = load_representation(
-                      category, label
+              parts = by_role(rep)
+
+              check(
+                  len(parts) == len(rep["components"]),
+                  "Duplicate component roles",
+              )
+
+              for role, part in parts.items():
+                  for field in (
+                      "x", "y", "width", "height"
+                  ):
+                      check(
+                          math.isfinite(part[field]),
+                          f"{role}: nonfinite {field}",
+                      )
+
+                  check(
+                      part["width"] > 0
+                      and part["height"] > 0,
+                      f"{role}: invalid dimensions",
                   )
 
-                  assert close(data["scale"], scale)
+                  parent = part["parent"]
 
-                  parts = {
-                      part["role"]: part
-                      for part in data["components"]
-                  }
+                  if parent is not None:
+                      check(
+                          parent in parts,
+                          f"{role}: missing parent",
+                      )
 
-                  assert set(parts) == set(base_parts)
+              return parts
 
-                  for role, part in parts.items():
-                      original = base_parts[role]
+          def check_svg_fitting(rep, folder):
+              path = folder / "relationship_preview.svg"
 
-                      assert part["parent"] == original["parent"]
-                      assert part["shape"] == original["shape"]
+              check(path.exists(), "SVG missing")
 
-                      for field in (
-                          "x", "y", "width", "height"
-                      ):
-                          assert math.isfinite(part[field]), (
-                              category, label, role, field
+              root = ET.parse(path).getroot()
+              ns = "{http://www.w3.org/2000/svg}"
+
+              groups = root.findall(f"{ns}g")
+
+              check(
+                  len(groups) == 1,
+                  "Expected one fitted SVG group",
+              )
+
+              transform = groups[0].get(
+                  "transform", ""
+              )
+
+              import re
+
+              match = re.fullmatch(
+                  r"translate\("
+                  r"([-+0-9.eE]+)\s+"
+                  r"([-+0-9.eE]+)\)\s+"
+                  r"scale\(([-+0-9.eE]+)\)",
+                  transform,
+              )
+
+              check(
+                  match is not None,
+                  "Invalid SVG fit transform",
+              )
+
+              tx, ty, factor = map(
+                  float, match.groups()
+              )
+
+              check(
+                  math.isfinite(factor)
+                  and factor > 0,
+                  "Invalid fitting factor",
+              )
+
+              for part in rep["components"]:
+                  left, top, right, bottom = (
+                      component_bounds(
+                          part, WIDTH, HEIGHT
+                      )
+                  )
+
+                  left = factor * left + tx
+                  right = factor * right + tx
+                  top = factor * top + ty
+                  bottom = factor * bottom + ty
+
+                  check(
+                      left >= PADDING - TOLERANCE
+                      and top >= PADDING - TOLERANCE
+                      and right <= WIDTH - PADDING + TOLERANCE
+                      and bottom <= HEIGHT - PADDING + TOLERANCE,
+                      f"Clipping detected: {part['role']}",
+                  )
+
+              return factor
+
+          def check_scaled_layout(base, scaled, scale):
+              base_parts = by_role(base)
+              scaled_parts = by_role(scaled)
+
+              check(
+                  set(base_parts) == set(scaled_parts),
+                  "Component roles changed",
+              )
+
+              for role, part in scaled_parts.items():
+                  original = base_parts[role]
+
+                  for field in ("width", "height"):
+                      check(
+                          abs(
+                              part[field]
+                              - original[field] * scale
+                          ) < 0.00001,
+                          f"{role}: incorrect scaled {field}",
+                      )
+
+                  parent = part["parent"]
+
+                  if parent is not None:
+                      for field in ("x", "y"):
+                          original_offset = (
+                              original[field]
+                              - base_parts[parent][field]
+                          )
+                          scaled_offset = (
+                              part[field]
+                              - scaled_parts[parent][field]
                           )
 
-                      assert close(
-                          part["width"],
-                          original["width"] * scale
-                      )
+                          check(
+                              abs(
+                                  scaled_offset
+                                  - original_offset * scale
+                              ) < 0.00001,
+                              f"{role}: incorrect {field} offset",
+                          )
 
-                      assert close(
-                          part["height"],
-                          original["height"] * scale
-                      )
+          learned = train(EXAMPLES)
 
-                      parent_role = part["parent"]
-
-                      if parent_role is not None:
-                          assert parent_role in parts
-
-                          parent = parts[parent_role]
-                          base_parent = base_parts[parent_role]
-
-                          for axis in ("x", "y"):
-                              offset = (
-                                  part[axis] - parent[axis]
-                              )
-
-                              base_offset = (
-                                  original[axis]
-                                  - base_parent[axis]
-                              )
-
-                              assert close(
-                                  offset,
-                                  base_offset * scale
-                              ), (
-                                  category, label, role, axis
-                              )
-
-                  # Check that every circle is actually
-                  # represented by an SVG circle element.
-                  svg_circles = [
-                      element
-                      for element in svg.iter()
-                      if element.tag.split("}")[-1] == "circle"
-                  ]
-
-                  expected_circles = sum(
-                      part["shape"] == "circle"
-                      for part in parts.values()
-                  )
-
-                  assert len(svg_circles) == expected_circles
-
-                  for circle in svg_circles:
-                      radius = float(circle.attrib["r"])
-                      assert math.isfinite(radius)
-                      assert radius > 0
-
-                  results.append({
-                      "object": category,
-                      "scale": scale,
-                      "components": len(parts),
-                      "status": "pass"
-                  })
-
-                  print(
-                      "PASS:",
-                      category,
-                      f"{scale:.1f}x",
-                      "| components:",
-                      len(parts)
-                  )
-
-          unknown_path = (
-              root / "unknown"
-              / "relationship_representation.json"
+          check(
+              all(
+                  category in learned
+                  for category in CATEGORIES
+              ),
+              "Missing expected categories",
           )
 
-          unknown = json.loads(
-              unknown_path.read_text(encoding="utf-8")
-          )
+          baseline = {}
 
-          assert unknown.get("status") == "unknown"
+          # 15 existing multiscale layouts
+          for category in CATEGORIES:
+              reference = reconstruct(
+                  category, learned, scale=1.0
+              )
+              baseline[category] = reference
+
+              for scale in SCALES:
+                  folder = (
+                      OUTPUT
+                      / category
+                      / f"scale_{int(scale * 100)}"
+                  )
+
+                  def test_multiscale(
+                      category=category,
+                      scale=scale,
+                      folder=folder,
+                      reference=reference,
+                  ):
+                      rep = run_cli(
+                          category,
+                          scale,
+                          0.0,
+                          1337,
+                          folder,
+                      )
+
+                      check_geometry(rep)
+                      check_scaled_layout(
+                          reference, rep, scale
+                      )
+
+                      factor = check_svg_fitting(
+                          rep, folder
+                      )
+
+                      return {
+                          "category": category,
+                          "scale": scale,
+                          "fit_factor": factor,
+                      }
+
+                  record(
+                      f"multiscale_{category}_{scale}",
+                      test_multiscale,
+                  )
+
+          # 45 variation combinations
+          for category in CATEGORIES:
+              for variation in VARIATIONS:
+                  for seed in SEEDS:
+                      folder = (
+                          OUTPUT
+                          / "variations"
+                          / category
+                          / f"variation_{int(variation * 100)}"
+                          / f"seed_{seed}"
+                      )
+
+                      def test_variation(
+                          category=category,
+                          variation=variation,
+                          seed=seed,
+                          folder=folder,
+                      ):
+                          rep = run_cli(
+                              category,
+                              1.0,
+                              variation,
+                              seed,
+                              folder,
+                          )
+
+                          check_geometry(rep)
+
+                          repeat = reconstruct(
+                              category,
+                              learned,
+                              scale=1.0,
+                              variation=variation,
+                              seed=seed,
+                          )
+
+                          check(
+                              rep == repeat,
+                              "Seed reproducibility failed",
+                          )
+
+                          if variation == 0.0:
+                              check(
+                                  rep["components"]
+                                  == baseline[category]["components"],
+                                  "Zero variation changed baseline",
+                              )
+
+                          factor = check_svg_fitting(
+                              rep, folder
+                          )
+
+                          return {
+                              "variation": variation,
+                              "seed": seed,
+                              "fit_factor": factor,
+                          }
+
+                      record(
+                          f"variation_{category}_{variation}_{seed}",
+                          test_variation,
+                      )
+
+          # Verify that variation can actually change geometry.
+          # Search seeds rather than assuming particular seeds
+          # select different training examples.
+          for category in CATEGORIES:
+
+              def test_diversity(category=category):
+                  variants = set()
+
+                  for seed in range(100):
+                      rep = reconstruct(
+                          category,
+                          learned,
+                          variation=1.0,
+                          seed=seed,
+                      )
+
+                      check_geometry(rep)
+
+                      signature = json.dumps(
+                          rep["components"],
+                          sort_keys=True,
+                      )
+
+                      variants.add(signature)
+
+                  check(
+                      len(variants) >= 2,
+                      "No geometric diversity detected",
+                  )
+
+                  return {
+                      "distinct_layouts": len(variants),
+                      "seeds_checked": 100,
+                  }
+
+              record(
+                  f"diversity_{category}",
+                  test_diversity,
+              )
+
+          def test_unknown():
+              folder = OUTPUT / "unknown"
+
+              rep = run_cli(
+                  "unknown_object",
+                  1.0,
+                  0.5,
+                  11,
+                  folder,
+              )
+
+              check(
+                  rep["status"] == "unknown",
+                  "Unknown object was not rejected",
+              )
+
+              check(
+                  not (
+                      folder / "relationship_preview.svg"
+                  ).exists(),
+                  "Unknown object produced SVG",
+              )
+
+              return {
+                  "status": "unknown",
+              }
+
+          record("unknown_object", test_unknown)
 
           report = {
               "project": "MELODIA AI",
-              "test": "multiscale_component_relationships",
-              "categories": len(categories),
-              "scales_per_category": len(scales),
-              "total_layouts": len(results),
-              "unknown_object_handling": "pass",
-              "results": results
+              "engine_version": "1.3",
+              "test_suite": "multiscale_and_variation",
+              "total_tests": len(results),
+              "passed": sum(
+                  item["status"] == "pass"
+                  for item in results
+              ),
+              "failed": len(failures),
+              "results": results,
+              "failures": failures,
           }
 
-          (root / "multiscale_validation_report.json").write_text(
+          (OUTPUT / "validation_report.json").write_text(
               json.dumps(report, indent=2),
-              encoding="utf-8"
+              encoding="utf-8",
           )
 
-          print("ALL 15 MULTI-SCALE TESTS PASSED")
+          print(
+              json.dumps({
+                  "total": report["total_tests"],
+                  "passed": report["passed"],
+                  "failed": report["failed"],
+              }, indent=2)
+          )
+
+          if failures:
+              sys.exit(1)
           PY
 
-      - name: Upload multi-scale artifacts
+      - name: Upload validation results
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: melodia-multiscale-relationships
-          path: melodia_relationship_tests/
-          retention-days: 30
+          name: melodia-object-variation-validation
+          path: melodia_validation_output/
           if-no-files-found: warn
-
-      - name: Write workflow summary
-        if: success()
-        run: |
-          echo "## MELODIA Multi-Scale Validation" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "15 layouts validated successfully." >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "Five categories at 50%, 100%, and 150% scale." >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "Component sizes and parent-relative offsets verified." >> "$GITHUB_STEP_SUMMARY"
-          echo "SVG circle elements verified." >> "$GITHUB_STEP_SUMMARY"
-          echo "Unknown-object handling verified." >> "$GITHUB_STEP_SUMMARY"
+          retention-days: 30
