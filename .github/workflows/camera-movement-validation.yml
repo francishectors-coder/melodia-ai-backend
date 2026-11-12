@@ -1,0 +1,376 @@
+
+name: MELODIA AI - Camera Movement Validation
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - "melodia_camera_movement_engine.py"
+      - ".github/workflows/camera-movement-validation.yml"
+
+jobs:
+  validate-camera-movement:
+    name: Validate MELODIA V2.1
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Run camera movement validation
+        shell: bash
+        run: |
+          python - <<'PY'
+          import copy
+          import json
+          import math
+          import subprocess
+          import sys
+          from pathlib import Path
+
+          from melodia_camera_movement_engine import (
+              VERSION,
+              MOVEMENTS,
+              plan_camera_movements,
+          )
+
+          OUTPUT = Path("melodia_camera_movement_validation")
+          OUTPUT.mkdir(parents=True, exist_ok=True)
+          results = []
+
+          def check(condition, message):
+              if not condition:
+                  raise AssertionError(message)
+
+          def run_test(name, function):
+              try:
+                  details = function()
+                  results.append({
+                      "test": name,
+                      "status": "pass",
+                      "details": details,
+                  })
+                  print("PASS:", name)
+              except Exception as exc:
+                  results.append({
+                      "test": name,
+                      "status": "fail",
+                      "error": f"{type(exc).__name__}: {exc}",
+                  })
+                  print("FAIL:", name, repr(exc))
+
+          def obj(identity="tree", x=0.5, y=0.5):
+              return {
+                  "id": identity,
+                  "category": "tree",
+                  "center": {"x": x, "y": y},
+              }
+
+          def scene(movement=None, duration=10.0):
+              result = {
+                  "objects": [obj()],
+                  "duration": duration,
+              }
+              if movement is not None:
+                  result["camera_movement"] = movement
+              return result
+
+          def plan(scenes=None, **kwargs):
+              if scenes is None:
+                  scenes = [scene()]
+              return plan_camera_movements(scenes, **kwargs)
+
+          def reject(scenes, **kwargs):
+              try:
+                  plan_camera_movements(scenes, **kwargs)
+              except ValueError:
+                  return {"rejected": True}
+              raise AssertionError("Expected ValueError")
+
+          def basic_test():
+              result = plan()
+              check(result["version"] == VERSION, "Version")
+              check(result["scene_count"] == 1, "Count")
+              check(len(result["camera_plans"]) == 1,
+                    "Missing camera plan")
+              return {"version": VERSION}
+
+          run_test("basic_generation", basic_test)
+
+          def movement_test():
+              found = []
+              for movement in MOVEMENTS:
+                  result = plan([scene(movement)])
+                  actual = result["camera_plans"][0]["movement"]
+                  check(actual == movement, "Movement mismatch")
+                  found.append(actual)
+              return {"movements": found}
+
+          run_test("supported_movements", movement_test)
+
+          def static_test():
+              camera = plan([scene("static")])["camera_plans"][0]
+              start, end = camera["keyframes"]
+              check(start["x"] == end["x"], "Static x")
+              check(start["y"] == end["y"], "Static y")
+              check(start["zoom"] == end["zoom"], "Static zoom")
+              return {"static": True}
+
+          run_test("static_camera", static_test)
+
+          def pan_left_test():
+              camera = plan([scene("pan_left")])["camera_plans"][0]
+              start, end = camera["keyframes"]
+              check(start["x"] > end["x"], "Pan left direction")
+              return {"direction": "left"}
+
+          run_test("pan_left", pan_left_test)
+
+          def pan_right_test():
+              camera = plan([scene("pan_right")])["camera_plans"][0]
+              start, end = camera["keyframes"]
+              check(start["x"] < end["x"], "Pan right direction")
+              return {"direction": "right"}
+
+          run_test("pan_right", pan_right_test)
+
+          def zoom_in_test():
+              camera = plan([scene("zoom_in")])["camera_plans"][0]
+              start, end = camera["keyframes"]
+              check(end["zoom"] > start["zoom"], "Zoom in")
+              return {"zoom": end["zoom"]}
+
+          run_test("zoom_in", zoom_in_test)
+
+          def zoom_out_test():
+              camera = plan([scene("zoom_out")])["camera_plans"][0]
+              start, end = camera["keyframes"]
+              check(start["zoom"] > end["zoom"], "Zoom out")
+              return {"zoom": start["zoom"]}
+
+          run_test("zoom_out", zoom_out_test)
+
+          def tracking_test():
+              camera = plan([
+                  scene("track_subject")
+              ])["camera_plans"][0]
+              check(camera["focus_id"] == "tree",
+                    "Subject identity")
+              check(camera["movement"] == "track_subject",
+                    "Tracking movement")
+              return {"focus": camera["focus_id"]}
+
+          run_test("subject_tracking", tracking_test)
+
+          def focus_test():
+              target = obj("flower", 0.8, 0.3)
+              item = {
+                  "objects": [obj(), target],
+                  "focus_id": "flower",
+                  "camera_movement": "static",
+              }
+              camera = plan([item])["camera_plans"][0]
+              check(camera["focus_id"] == "flower",
+                    "Focus identity")
+              check(camera["keyframes"][0]["x"] == 0.8,
+                    "Focus x")
+              return {"focus": "flower"}
+
+          run_test("explicit_subject_focus", focus_test)
+
+          def continuity_focus_test():
+              item = {
+                  "objects": [
+                      dict(obj("tree_001"), continuity_id="hero")
+                  ],
+                  "focus_id": "hero",
+              }
+              camera = plan([item])["camera_plans"][0]
+              check(camera["focus_id"] == "hero",
+                    "Continuity focus")
+              return {"focus": "hero"}
+
+          run_test("continuity_identity_focus",
+                   continuity_focus_test)
+
+          def timing_test():
+              result = plan([
+                  scene(duration=5),
+                  scene(duration=8),
+                  scene(duration=12),
+              ])
+              starts = [
+                  item["start_seconds"]
+                  for item in result["camera_plans"]
+              ]
+              check(starts == [0, 5, 13], "Start times")
+              check(result["total_duration_seconds"] == 25,
+                    "Total duration")
+              return {"starts": starts, "total": 25}
+
+          run_test("scene_timing", timing_test)
+
+          def keyframe_test():
+              camera = plan()["camera_plans"][0]
+              frames = camera["keyframes"]
+              check(len(frames) == 2, "Keyframe count")
+              check(frames[0]["t"] == 0, "Start time")
+              check(frames[1]["t"] == 1, "End time")
+              check(camera["easing"] == "ease_in_out",
+                    "Easing")
+              return {"keyframes": 2}
+
+          run_test("keyframe_structure", keyframe_test)
+
+          def boundaries_test():
+              for movement in MOVEMENTS:
+                  item = {
+                      "objects": [obj(x=0, y=1)],
+                      "camera_movement": movement,
+                  }
+                  camera = plan([item])["camera_plans"][0]
+                  for frame in camera["keyframes"]:
+                      check(0 <= frame["x"] <= 1, "X boundary")
+                      check(0 <= frame["y"] <= 1, "Y boundary")
+                      check(frame["zoom"] >= 1, "Zoom boundary")
+                      check(all(math.isfinite(v)
+                                for v in frame.values()),
+                            "Non-finite frame")
+              return {"bounded": True}
+
+          run_test("camera_boundaries", boundaries_test)
+
+          def reproducibility_test():
+              scenes = [scene(), scene(), scene()]
+              first = plan(scenes, seed=77)
+              second = plan(scenes, seed=77)
+              check(first == second, "Non-deterministic output")
+              return {"reproducible": True}
+
+          run_test("seed_reproducibility",
+                   reproducibility_test)
+
+          def immutability_test():
+              scenes = [scene(), scene()]
+              original = copy.deepcopy(scenes)
+              plan(scenes)
+              check(scenes == original, "Source modified")
+              return {"unchanged": True}
+
+          run_test("source_immutability", immutability_test)
+
+          run_test("reject_empty_scenes",
+                   lambda: reject([]))
+
+          run_test("reject_invalid_scene",
+                   lambda: reject([{}]))
+
+          run_test("reject_invalid_movement",
+                   lambda: reject([scene("fly_away")]))
+
+          run_test("reject_invalid_duration",
+                   lambda: reject([scene(duration=-1)]))
+
+          run_test("reject_invalid_intensity",
+                   lambda: reject([scene()], intensity=2))
+
+          run_test("reject_invalid_seed",
+                   lambda: reject([scene()], seed="invalid"))
+
+          run_test("reject_invalid_focus",
+                   lambda: reject([{
+                       "objects": [obj()],
+                       "focus_id": "missing",
+                   }]))
+
+          run_test("reject_duplicate_identity",
+                   lambda: reject([{
+                       "objects": [obj("tree"), obj("tree")],
+                   }]))
+
+          run_test("reject_invalid_center",
+                   lambda: reject([{
+                       "objects": [obj(x=5)],
+                   }]))
+
+          def empty_scene_test():
+              camera = plan([{
+                  "objects": [],
+              }])["camera_plans"][0]
+              check(camera["movement"] == "static",
+                    "Empty scene movement")
+              check(camera["focus_id"] is None,
+                    "Empty scene focus")
+              return {"empty_scene": True}
+
+          run_test("empty_scene_static", empty_scene_test)
+
+          def cli_test():
+              input_file = OUTPUT / "input.json"
+              result_file = OUTPUT / "camera_plan.json"
+              input_file.write_text(
+                  json.dumps({"scenes": [scene(), scene()]}),
+                  encoding="utf-8",
+              )
+              subprocess.run([
+                  sys.executable,
+                  "melodia_camera_movement_engine.py",
+                  "--input", str(input_file),
+                  "--output", str(result_file),
+                  "--seed", "77",
+              ], check=True, capture_output=True, text=True)
+              exported = json.loads(
+                  result_file.read_text(encoding="utf-8")
+              )
+              check(exported["scene_count"] == 2,
+                    "CLI scene count")
+              check(exported["seed"] == 77, "CLI seed")
+              return {"cli": "passed"}
+
+          run_test("command_line_export", cli_test)
+
+          report = {
+              "project": "MELODIA AI",
+              "version": VERSION,
+              "suite": "camera_movement_validation",
+              "total_tests": len(results),
+              "passed": sum(
+                  r["status"] == "pass" for r in results
+              ),
+              "failed": sum(
+                  r["status"] == "fail" for r in results
+              ),
+              "results": results,
+          }
+
+          (OUTPUT / "validation_report.json").write_text(
+              json.dumps(report, indent=2),
+              encoding="utf-8",
+          )
+
+          print("MELODIA V2.1 VALIDATION SUMMARY")
+          print(json.dumps({
+              "total": report["total_tests"],
+              "passed": report["passed"],
+              "failed": report["failed"],
+          }, indent=2))
+
+          if report["failed"]:
+              sys.exit(1)
+          PY
+
+      - name: Upload validation artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: melodia-camera-movement-validation
+          path: melodia_camera_movement_validation/
+          if-no-files-found: warn
+          retention-days: 30
