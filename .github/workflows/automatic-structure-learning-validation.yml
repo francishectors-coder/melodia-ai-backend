@@ -1,0 +1,577 @@
+
+name: MELODIA AI - Automatic Structure Learning Validation
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - "melodia_automatic_structure_learner.py"
+      - "melodia_universal_object_schema.py"
+      - "melodia_geometric_object_learner.py"
+      - ".github/workflows/automatic-structure-learning-validation.yml"
+
+jobs:
+  validate-structure-learning:
+    name: Validate Automatic Structure Learning V1.5
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Run structure learning validation
+        shell: bash
+        run: |
+          python - <<'PY'
+          import copy
+          import json
+          import math
+          import subprocess
+          import sys
+          from pathlib import Path
+
+          from melodia_geometric_object_learner import EXAMPLES
+
+          from melodia_automatic_structure_learner import (
+              VERSION,
+              parse_example,
+              overlap_ratio,
+              infer_hierarchy,
+              learn_category,
+              learn_all,
+          )
+
+          from melodia_universal_object_schema import (
+              build_universal_library,
+              validate_object,
+          )
+
+          OUTPUT = Path("melodia_structure_validation")
+          OUTPUT.mkdir(parents=True, exist_ok=True)
+
+          results = []
+
+          def check(condition, message):
+              if not condition:
+                  raise AssertionError(message)
+
+          def run_test(name, function):
+              try:
+                  details = function()
+
+                  results.append({
+                      "test": name,
+                      "status": "pass",
+                      "details": details,
+                  })
+
+                  print("PASS:", name)
+
+              except Exception as exc:
+                  results.append({
+                      "test": name,
+                      "status": "fail",
+                      "error": str(exc),
+                  })
+
+                  print("FAIL:", name, str(exc))
+
+          def expect_error(function):
+              try:
+                  function()
+              except ValueError:
+                  return
+
+              raise AssertionError(
+                  "Invalid input was accepted"
+              )
+
+          learned = learn_all(EXAMPLES)
+
+          expected_categories = {
+              "tree",
+              "house",
+              "vehicle",
+              "animal",
+              "flower",
+          }
+
+          def test_categories():
+              check(
+                  expected_categories.issubset(
+                      learned.keys()
+                  ),
+                  "Expected categories missing",
+              )
+
+              return {
+                  "categories": len(learned),
+              }
+
+          run_test(
+              "expected_categories",
+              test_categories,
+          )
+
+          # Validate each learned category.
+          for category, samples in sorted(
+              EXAMPLES.items()
+          ):
+
+              def test_category(
+                  category=category,
+                  samples=samples,
+              ):
+                  model = learned[category]
+
+                  parsed = [
+                      parse_example(sample)
+                      for sample in samples
+                  ]
+
+                  roles = set(parsed[0])
+
+                  check(
+                      model["root"] in roles,
+                      "Invalid root",
+                  )
+
+                  check(
+                      model["training_examples"]
+                      == len(samples),
+                      "Training count mismatch",
+                  )
+
+                  parts = {
+                      part["role"]: part
+                      for part in model["parts"]
+                  }
+
+                  check(
+                      set(parts) == roles,
+                      "Learned component roles mismatch",
+                  )
+
+                  roots = [
+                      part for part in parts.values()
+                      if part["parent"] is None
+                  ]
+
+                  check(
+                      len(roots) == 1,
+                      "Expected exactly one root",
+                  )
+
+                  check(
+                      roots[0]["role"]
+                      == model["root"],
+                      "Root reference mismatch",
+                  )
+
+                  for role, part in parts.items():
+                      parent = part["parent"]
+
+                      if parent is not None:
+                          check(
+                              parent in parts,
+                              f"{role}: missing parent",
+                          )
+
+                      for field in (
+                          "dx",
+                          "dy",
+                          "width",
+                          "height",
+                      ):
+                          check(
+                              math.isfinite(part[field]),
+                              f"{role}: invalid geometry",
+                          )
+
+                      check(
+                          part["width"] > 0
+                          and part["height"] > 0,
+                          f"{role}: invalid size",
+                      )
+
+                      check(
+                          len(part["deviations"])
+                          == len(samples),
+                          f"{role}: deviation count mismatch",
+                      )
+
+                      for field in (
+                          "dx",
+                          "dy",
+                          "width",
+                          "height",
+                      ):
+                          deviation_sum = sum(
+                              record[field]
+                              for record in part["deviations"]
+                          )
+
+                          check(
+                              abs(deviation_sum) < 0.00001,
+                              f"{role}: deviations not centered",
+                          )
+
+                  # Confirm every chain reaches the root.
+                  for role in roles:
+                      visited = set()
+                      current = role
+
+                      while current is not None:
+                          check(
+                              current not in visited,
+                              "Cycle detected",
+                          )
+
+                          visited.add(current)
+                          current = parts[current]["parent"]
+
+                      check(
+                          model["root"] in visited,
+                          "Component not connected to root",
+                      )
+
+                  return {
+                      "category": category,
+                      "components": len(parts),
+                      "training_examples": len(samples),
+                  }
+
+              run_test(
+                  f"learn_category_{category}",
+                  test_category,
+              )
+
+          def test_reproducibility():
+              first = learn_all(EXAMPLES)
+              second = learn_all(EXAMPLES)
+
+              check(
+                  first == second,
+                  "Learning results are not reproducible",
+              )
+
+              return {
+                  "reproducible": True,
+              }
+
+          run_test(
+              "reproducible_learning",
+              test_reproducibility,
+          )
+
+          def test_universal_schema():
+              library = build_universal_library(
+                  learned
+              )
+
+              for obj in library["objects"].values():
+                  validate_object(obj)
+
+              check(
+                  len(library["objects"])
+                  == len(learned),
+                  "Object count mismatch",
+              )
+
+              return {
+                  "objects": len(library["objects"]),
+                  "schema_version": library["schema_version"],
+              }
+
+          run_test(
+              "universal_schema_compatibility",
+              test_universal_schema,
+          )
+
+          def test_inconsistent_roles():
+              samples = copy.deepcopy(
+                  EXAMPLES["tree"]
+              )
+
+              modified = [
+                  list(sample)
+                  for sample in samples
+              ]
+
+              modified[1] = modified[1][:-1]
+
+              expect_error(
+                  lambda: learn_category(
+                      "invalid_tree",
+                      modified,
+                  )
+              )
+
+              return {
+                  "invalid_roles_rejected": True,
+              }
+
+          run_test(
+              "reject_inconsistent_roles",
+              test_inconsistent_roles,
+          )
+
+          def test_duplicate_roles():
+              sample = list(
+                  EXAMPLES["tree"][0]
+              )
+
+              sample.append(
+                  sample[0]
+              )
+
+              expect_error(
+                  lambda: parse_example(sample)
+              )
+
+              return {
+                  "duplicate_roles_rejected": True,
+              }
+
+          run_test(
+              "reject_duplicate_roles",
+              test_duplicate_roles,
+          )
+
+          def test_invalid_dimensions():
+              sample = list(
+                  EXAMPLES["tree"][0]
+              )
+
+              component = list(sample[0])
+              component[4] = -0.5
+              sample[0] = tuple(component)
+
+              expect_error(
+                  lambda: parse_example(sample)
+              )
+
+              return {
+                  "invalid_dimensions_rejected": True,
+              }
+
+          run_test(
+              "reject_invalid_dimensions",
+              test_invalid_dimensions,
+          )
+
+          def test_nonfinite_geometry():
+              sample = list(
+                  EXAMPLES["tree"][0]
+              )
+
+              component = list(sample[0])
+              component[2] = float("nan")
+              sample[0] = tuple(component)
+
+              expect_error(
+                  lambda: parse_example(sample)
+              )
+
+              return {
+                  "nonfinite_geometry_rejected": True,
+              }
+
+          run_test(
+              "reject_nonfinite_geometry",
+              test_nonfinite_geometry,
+          )
+
+          def test_overlap_ratio():
+              a = {
+                  "x": 0.5,
+                  "y": 0.5,
+                  "width": 0.4,
+                  "height": 0.4,
+              }
+
+              b = dict(a)
+
+              check(
+                  abs(
+                      overlap_ratio(a, b) - 1.0
+                  ) < 0.000001,
+                  "Identical boxes must fully overlap",
+              )
+
+              b["x"] = 0.95
+
+              check(
+                  overlap_ratio(a, b) == 0.0,
+                  "Separated boxes must not overlap",
+              )
+
+              return {
+                  "overlap_calculation": "correct",
+              }
+
+          run_test(
+              "overlap_ratio",
+              test_overlap_ratio,
+          )
+
+          def test_hierarchy_inference():
+              samples = [
+                  parse_example(sample)
+                  for sample in EXAMPLES["tree"]
+              ]
+
+              roles = sorted(samples[0])
+
+              root, parents = infer_hierarchy(
+                  samples,
+                  roles,
+              )
+
+              check(
+                  root in roles,
+                  "Root not found",
+              )
+
+              check(
+                  len(parents) == len(roles) - 1,
+                  "Incorrect attachment count",
+              )
+
+              check(
+                  root not in parents,
+                  "Root must not have a parent",
+              )
+
+              return {
+                  "root": root,
+                  "relationships": len(parents),
+              }
+
+          run_test(
+              "hierarchy_inference",
+              test_hierarchy_inference,
+          )
+
+          def test_cli_generation():
+              destination = (
+                  OUTPUT / "generated"
+              )
+
+              subprocess.run(
+                  [
+                      sys.executable,
+                      "melodia_automatic_structure_learner.py",
+                      "--output",
+                      str(destination),
+                  ],
+                  check=True,
+                  capture_output=True,
+                  text=True,
+              )
+
+              expected_files = [
+                  "automatic_structure_model.json",
+                  "universal_object_library.json",
+                  "structure_learning_summary.json",
+              ]
+
+              for filename in expected_files:
+                  check(
+                      (
+                          destination / filename
+                      ).exists(),
+                      f"Missing output: {filename}",
+                  )
+
+              model = json.loads(
+                  (
+                      destination
+                      / "automatic_structure_model.json"
+                  ).read_text(encoding="utf-8")
+              )
+
+              check(
+                  model["version"] == VERSION,
+                  "Incorrect model version",
+              )
+
+              check(
+                  model["categories"] == learned,
+                  "Generated model differs from learned data",
+              )
+
+              summary = json.loads(
+                  (
+                      destination
+                      / "structure_learning_summary.json"
+                  ).read_text(encoding="utf-8")
+              )
+
+              check(
+                  summary["validation"] == "passed",
+                  "Invalid summary status",
+              )
+
+              return {
+                  "files": expected_files,
+                  "version": VERSION,
+              }
+
+          run_test(
+              "cli_generation",
+              test_cli_generation,
+          )
+
+          report = {
+              "project": "MELODIA AI",
+              "version": VERSION,
+              "suite": "automatic_structure_learning",
+              "total_tests": len(results),
+              "passed": sum(
+                  item["status"] == "pass"
+                  for item in results
+              ),
+              "failed": sum(
+                  item["status"] == "fail"
+                  for item in results
+              ),
+              "results": results,
+          }
+
+          report_path = (
+              OUTPUT / "validation_report.json"
+          )
+
+          report_path.write_text(
+              json.dumps(report, indent=2),
+              encoding="utf-8",
+          )
+
+          print(
+              json.dumps({
+                  "total": report["total_tests"],
+                  "passed": report["passed"],
+                  "failed": report["failed"],
+              }, indent=2)
+          )
+
+          if report["failed"]:
+              sys.exit(1)
+          PY
+
+      - name: Upload validation artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: melodia-automatic-structure-validation
+          path: melodia_structure_validation/
+          if-no-files-found: warn
+          retention-days: 30
