@@ -1,0 +1,66 @@
+
+name: MELODIA AI - Geometric Intelligence Test
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "melodia_geometric_intelligence.py"
+      - ".github/workflows/geometric-intelligence.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test-geometric-intelligence:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Check Python syntax
+        run: python -m py_compile melodia_geometric_intelligence.py
+
+      - name: Generate three geometric scenes
+        run: |
+          python melodia_geometric_intelligence.py \
+            "An elephant walks through a forest beside a river at sunset"
+
+      - name: Verify generated output
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          folder = Path("melodia_gi_test")
+          data = json.loads(
+              (folder / "manifest.json").read_text()
+          )
+
+          assert len(data["scenes"]) == 3
+
+          images = []
+          for scene in data["scenes"]:
+              assert scene["caption"].strip()
+              image = folder / scene["image"]
+              assert image.exists()
+              images.append(image.read_text())
+
+          assert len(set(images)) == 3
+          print("MELODIA geometric output checks passed")
+          PY
+
+      - name: Save test results
+        uses: actions/upload-artifact@v4
+        with:
+          name: melodia-geometric-test
+          path: melodia_gi_test/
+          retention-days: 7
