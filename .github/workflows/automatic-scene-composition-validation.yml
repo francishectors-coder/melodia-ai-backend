@@ -33,6 +33,7 @@ jobs:
         shell: bash
         run: |
           python - <<'PY'
+          import copy
           import json
           import math
           import subprocess
@@ -42,17 +43,25 @@ jobs:
 
           from melodia_geometric_object_learner import EXAMPLES
           from melodia_automatic_structure_learner import learn_all
+          from melodia_spatial_relationship_engine import generate_spatial_scene
           from melodia_automatic_scene_composer import (
               VERSION,
               THEMES,
               GROUND_Y,
+              GROUND_CATEGORIES,
+              MARGIN,
               detect_theme,
               object_bounds,
               shift_object,
+              vertical_object_ids,
               align_objects_to_ground,
               fit_composition,
               compose_scene,
               render_composed_svg,
+          )
+          from melodia_prompt_scene_generator import (
+              CANVAS_WIDTH,
+              CANVAS_HEIGHT,
           )
 
           OUTPUT = Path("melodia_scene_composition_validation")
@@ -60,6 +69,7 @@ jobs:
 
           learned = learn_all(EXAMPLES)
           results = []
+          EPSILON = 0.00001
 
           def check(condition, message):
               if not condition:
@@ -131,10 +141,10 @@ jobs:
                   left, top, right, bottom = object_bounds(obj)
 
                   check(
-                      left >= 0.045 - 0.00001
-                      and top >= 0.045 - 0.00001
-                      and right <= 0.955 + 0.00001
-                      and bottom <= 0.955 + 0.00001,
+                      left >= MARGIN - EPSILON
+                      and top >= MARGIN - EPSILON
+                      and right <= 1 - MARGIN + EPSILON
+                      and bottom <= 1 - MARGIN + EPSILON,
                       "Object outside composition margins",
                   )
 
@@ -157,8 +167,8 @@ jobs:
                   "Invalid SVG root",
               )
               check(
-                  root.get("width") == "1024"
-                  and root.get("height") == "576",
+                  root.get("width") == str(CANVAS_WIDTH)
+                  and root.get("height") == str(CANVAS_HEIGHT),
                   "Incorrect canvas dimensions",
               )
 
@@ -193,7 +203,50 @@ jobs:
                   "Incorrect ground color",
               )
 
+              check(
+                  abs(
+                      float(rects[1].get("y"))
+                      - GROUND_Y * CANVAS_HEIGHT
+                  ) < 0.001,
+                  "Rendered ground position is incorrect",
+              )
+
               return root
+
+          def verify_final_ground(scene):
+              protected = vertical_object_ids(scene)
+
+              grounded = [
+                  obj
+                  for obj in scene["objects"]
+                  if (
+                      obj["category"] in GROUND_CATEGORIES
+                      and obj["id"] not in protected
+                  )
+              ]
+
+              check(
+                  bool(grounded),
+                  "No eligible ground-based objects",
+              )
+
+              measurements = {}
+
+              for obj in grounded:
+                  bottom = object_bounds(obj)[3]
+
+                  check(
+                      abs(bottom - GROUND_Y) <= EPSILON,
+                      (
+                          f"{obj['category']} floats or sinks: "
+                          f"bottom={bottom:.6f}, "
+                          f"ground={GROUND_Y:.6f}"
+                      ),
+                  )
+
+                  measurements[obj["id"]] = bottom
+
+              return measurements
 
           def save_scene(name, prompt):
               scene = compose_scene(
@@ -223,7 +276,7 @@ jobs:
 
               return scene
 
-          # Three environment themes.
+          # Original tests 1-3: Environment themes.
           themes = {
               "day": "A tree beside a house in daylight",
               "sunset": "A tree beside a house at sunset",
@@ -246,26 +299,22 @@ jobs:
 
               test(f"theme_{expected}", theme_test)
 
-          # Ground alignment before final scene fitting.
+          # Original tests 4-8: Ground alignment.
           for category in sorted(learned):
               def ground_test(category=category):
-                  from melodia_spatial_relationship_engine import (
-                      generate_spatial_scene,
-                  )
-
                   base = generate_spatial_scene(
                       category,
                       learned,
                   )
 
                   aligned = align_objects_to_ground(base)
-
                   obj = aligned["objects"][0]
+
                   bottom = object_bounds(obj)[3]
 
                   check(
-                      abs(bottom - GROUND_Y) < 0.00001,
-                      "Ground alignment failed",
+                      abs(bottom - GROUND_Y) <= EPSILON,
+                      "Initial ground alignment failed",
                   )
 
                   return {
@@ -275,6 +324,7 @@ jobs:
 
               test(f"ground_alignment_{category}", ground_test)
 
+          # Original test 9: Spatial relationships.
           def spatial_relationship_test():
               scene = save_scene(
                   "spatial_relationships",
@@ -320,6 +370,7 @@ jobs:
               spatial_relationship_test,
           )
 
+          # Original test 10: Vertical relationship.
           def vertical_relationship_test():
               scene = save_scene(
                   "vertical_relationship",
@@ -327,6 +378,7 @@ jobs:
               )
 
               relation = scene["relationships"][0]
+
               objects = {
                   obj["id"]: obj
                   for obj in scene["objects"]
@@ -348,6 +400,7 @@ jobs:
               vertical_relationship_test,
           )
 
+          # Original test 11: Reproducibility.
           def reproducibility_test():
               prompt = "A tree beside a house at sunset"
 
@@ -373,6 +426,7 @@ jobs:
 
           test("reproducibility", reproducibility_test)
 
+          # Original test 12: Unsupported prompt.
           def unsupported_test():
               scene = compose_scene(
                   "A mountain beside an ocean",
@@ -388,6 +442,7 @@ jobs:
 
           test("unsupported_prompt", unsupported_test)
 
+          # Original test 13: Empty prompt.
           def empty_prompt_test():
               expect_value_error(
                   lambda: compose_scene("", learned)
@@ -395,6 +450,7 @@ jobs:
 
           test("reject_empty_prompt", empty_prompt_test)
 
+          # Original test 14: Invalid variation.
           def invalid_variation_test():
               expect_value_error(
                   lambda: compose_scene(
@@ -407,6 +463,7 @@ jobs:
               invalid_variation_test,
           )
 
+          # Original test 15: Invalid geometry.
           def invalid_geometry_test():
               obj = {
                   "components": [{
@@ -426,6 +483,7 @@ jobs:
               invalid_geometry_test,
           )
 
+          # Original test 16: Object translation.
           def translation_test():
               base = compose_scene("A tree", learned)
               original = base["objects"][0]
@@ -453,6 +511,7 @@ jobs:
 
           test("object_translation", translation_test)
 
+          # Original test 17: Command-line generation.
           def cli_test():
               folder = OUTPUT / "cli_output"
 
@@ -498,6 +557,138 @@ jobs:
               }
 
           test("command_line_generation", cli_test)
+
+          # New tests 18-22: Final ground alignment.
+          for category in sorted(learned):
+              def final_ground_test(category=category):
+                  scene = save_scene(
+                      f"final_ground_{category}",
+                      f"A {category} in daylight",
+                  )
+
+                  measurements = verify_final_ground(scene)
+
+                  return {
+                      "category": category,
+                      "measurements": measurements,
+                  }
+
+              test(
+                  f"final_ground_alignment_{category}",
+                  final_ground_test,
+              )
+
+          # New test 23: Multiple grounded objects.
+          def multiple_ground_test():
+              scene = save_scene(
+                  "multiple_grounded_objects",
+                  "A tree beside a house and a flower",
+              )
+
+              check(
+                  len(scene["objects"]) == 3,
+                  "Expected three objects",
+              )
+
+              return verify_final_ground(scene)
+
+          test(
+              "multiple_object_final_ground_alignment",
+              multiple_ground_test,
+          )
+
+          # New test 24: Ground and SVG consistency.
+          def ground_svg_consistency_test():
+              scene = save_scene(
+                  "ground_svg_consistency",
+                  "A tree beside a house at sunset",
+              )
+
+              measurements = verify_final_ground(scene)
+
+              svg = render_composed_svg(scene)
+              root = verify_svg(scene, svg)
+
+              ns = "{http://www.w3.org/2000/svg}"
+              rects = list(root.findall(ns + "rect"))
+
+              ground_pixel = float(rects[1].get("y"))
+
+              check(
+                  abs(
+                      ground_pixel
+                      - GROUND_Y * CANVAS_HEIGHT
+                  ) < 0.001,
+                  "SVG ground differs from scene ground",
+              )
+
+              return {
+                  "ground_pixel": ground_pixel,
+                  "object_bottoms": measurements,
+              }
+
+          test(
+              "ground_and_svg_consistency",
+              ground_svg_consistency_test,
+          )
+
+          # New test 25: Final scene fits canvas.
+          def final_canvas_test():
+              scene = save_scene(
+                  "final_canvas",
+                  "A tree to the left of a house "
+                  "and a flower to the right of the house",
+              )
+
+              verify_geometry(scene)
+
+              return {
+                  "objects": len(scene["objects"]),
+                  "within_canvas": True,
+              }
+
+          test(
+              "final_canvas_boundaries",
+              final_canvas_test,
+          )
+
+          # New test 26: Final fitting preserves vertical order.
+          def final_vertical_order_test():
+              base = generate_spatial_scene(
+                  "A flower above a vehicle",
+                  learned,
+              )
+
+              aligned = align_objects_to_ground(base)
+              fitted = fit_composition(aligned)
+
+              check(
+                  len(fitted["relationships"]) >= 1,
+                  "Vertical relationship missing",
+              )
+
+              objects = {
+                  obj["id"]: obj
+                  for obj in fitted["objects"]
+              }
+
+              for relation in fitted["relationships"]:
+                  if relation["relation"] == "above":
+                      check(
+                          objects[relation["subject"]]
+                          ["center"]["y"]
+                          <
+                          objects[relation["target"]]
+                          ["center"]["y"],
+                          "Final fitting reversed vertical order",
+                      )
+
+              return {"vertical_order": "preserved"}
+
+          test(
+              "final_fitting_vertical_order",
+              final_vertical_order_test,
+          )
 
           report = {
               "project": "MELODIA AI",
