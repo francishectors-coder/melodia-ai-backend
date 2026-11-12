@@ -349,7 +349,10 @@ jobs:
               ordering_test,
           )
 
+          
           # Test 9: SVG object groups.
+          # Inspect nested object groups while preserving
+          # actual SVG document drawing order.
           def svg_group_test():
               result = save_scene(
                   "svg_groups",
@@ -358,33 +361,46 @@ jobs:
               )
 
               svg = render_depth_svg(result)
-
               root = ET.fromstring(svg)
 
               ns = "{http://www.w3.org/2000/svg}"
-
-              groups = [
-                  element
-                  for element in root
-                  if element.tag == ns + "g"
-              ]
-
-              ids = [
-                  group.get("id")
-                  for group in groups
-              ]
 
               expected = [
                   obj["id"]
                   for obj in result["objects"]
               ]
 
+              expected_set = set(expected)
+
+              # The renderer may wrap each object in
+              # an outer transformation group.
+              # Search descendants in document order.
+              ids = [
+                  element.get("id")
+                  for element in root.iter(ns + "g")
+                  if element.get("id") in expected_set
+              ]
+
               check(
                   ids == expected,
-                  "SVG groups are not in depth order",
+                  (
+                      "SVG object drawing order incorrect: "
+                      f"expected={expected}, actual={ids}"
+                  ),
               )
 
-              return {"group_ids": ids}
+              check(
+                  len(ids) == len(expected),
+                  "Missing or duplicated SVG object groups",
+              )
+
+              return {
+                  "group_ids": ids,
+                  "depth_order": [
+                      obj["depth"]
+                      for obj in result["objects"]
+                  ],
+              }
 
           run_test(
               "svg_layer_order",
