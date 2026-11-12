@@ -1,0 +1,125 @@
+name: MELODIA V2.4 Cinematic Video Rendering Validation
+
+on:
+  push:
+    paths:
+      - 'melodia_cinematic_video_renderer.py'
+      - 'melodia_cinematic_orchestration_engine.py'
+      - 'melodia_scene_depth_engine.py'
+      - '.github/workflows/cinematic-video-rendering-validation.yml'
+  workflow_dispatch:
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install rendering dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y ffmpeg libcairo2 libffi-dev
+          python -m pip install --upgrade pip
+          python -m pip install cairosvg
+      - name: Run unit and real MP4 validation
+        shell: bash
+        run: |
+          python - <<'PY'
+          import copy
+          import json
+          import math
+          import pathlib
+          import shutil
+          import subprocess
+          import tempfile
+          import traceback
+          from unittest.mock import patch
+
+          from melodia_cinematic_video_renderer import render_video
+          from melodia_cinematic_orchestration_engine import orchestrate_prompts
+
+          results = []
+          def check(name, fn):
+              try:
+                  fn()
+                  results.append({'name': name, 'status': 'passed'})
+                  print('PASS', name, flush=True)
+              except Exception as exc:
+                  results.append({'name': name, 'status': 'failed', 'error': str(exc), 'traceback': traceback.format_exc()})
+                  print('FAIL', name, repr(exc), flush=True)
+
+          def rejects(fn, error=ValueError):
+              try:
+                  fn()
+              except error:
+                  return
+              raise AssertionError(f'Expected {error.__name__}')
+
+          with tempfile.TemporaryDirectory() as folder:
+              root = pathlib.Path(folder)
+              plan = orchestrate_prompts(['A tree in the foreground at sunset'], default_duration=1.2)
+              def output(name):
+                  return root / name
+              check('reject non-dictionary plan', lambda: rejects(lambda: render_video([], output('invalid.mp4'))))
+              check('reject wrong version', lambda: rejects(lambda: render_video({'version': '2.2'}, output('invalid.mp4'))))
+              check('reject absent scene arrays', lambda: rejects(lambda: render_video({'version': '2.3', 'scenes': []}, output('invalid.mp4'))))
+              check('reject inconsistent camera array', lambda: rejects(lambda: render_video({**plan, 'camera_plans': []}, output('invalid.mp4'))))
+              check('reject inconsistent timeline array', lambda: rejects(lambda: render_video({**plan, 'scene_timeline': []}, output('invalid.mp4'))))
+              check('reject inconsistent transitions array', lambda: rejects(lambda: render_video({**plan, 'cinematic_transitions': [{}]}, output('invalid.mp4'))))
+              for field, value in [('width', 0), ('width', 101), ('height', 0), ('height', 101), ('fps', 0), ('fps', 2.5), ('width', True)]:
+                  check(f'reject invalid {field}={value}', lambda f=field,v=value: rejects(lambda: render_video(plan, output('invalid.mp4'), **{f:v})))
+              check('reject missing ffmpeg executable', lambda: rejects(lambda: render_video(plan, output('invalid.mp4'), ffmpeg='melodia-nonexistent-ffmpeg'), RuntimeError))
+              bad = copy.deepcopy(plan)
+              bad['scene_timeline'][0]['duration_seconds'] = 0
+              check('reject zero scene duration', lambda: rejects(lambda: render_video(bad, output('invalid.mp4'))))
+              bad = copy.deepcopy(plan)
+              bad['total_output_duration_seconds'] += 1
+              check('reject mismatched output duration', lambda: rejects(lambda: render_video(bad, output('invalid.mp4'))))
+              bad = copy.deepcopy(plan)
+              bad['scenes'][0]['status'] = 'unsupported'
+              check('reject unsupported geometric scene', lambda: rejects(lambda: render_video(bad, output('invalid.mp4'))))
+              bad = copy.deepcopy(plan)
+              bad['camera_plans'][0]['keyframes'] = []
+              check('reject missing camera keyframes', lambda: rejects(lambda: render_video(bad, output('invalid.mp4'))))
+              bad = copy.deepcopy(plan)
+              bad['camera_plans'][0]['keyframes'][0]['zoom'] = 0.5
+              check('reject invalid camera zoom', lambda: rejects(lambda: render_video(bad, output('invalid.mp4'))))
+
+              def probe(path):
+                  raw = subprocess.check_output(['ffprobe', '-v', 'error', '-select_streams', 'v:0', '-show_entries', 'stream=codec_name,width,height,r_frame_rate:format=duration', '-of', 'json', str(path)], text=True)
+                  return json.loads(raw)
+
+              def real_render(name, p, expected, width=320, height=180, fps=12):
+                  destination = output(name)
+                  metadata = render_video(p, destination, width=width, height=height, fps=fps)
+                  assert destination.is_file() and destination.stat().st_size > 1000
+                  info = probe(destination)
+                  stream = info['streams'][0]
+                  assert stream['codec_name'] == 'h264'
+                  assert (stream['width'], stream['height']) == (width, height)
+                  assert abs(float(info['format']['duration']) - expected) <= max(0.2, 2/fps), info
+                  assert abs(metadata['expected_duration_seconds'] - expected) < 0.0001
+                  return metadata
+
+              check('render real single-scene H.264 MP4', lambda: real_render('single.mp4', plan, 1.2))
+              two = orchestrate_prompts(['A tree in the foreground', 'A house in the middle ground'], default_duration=1.2, transition_duration=0.3)
+              check('render real two-scene cinematic transition MP4', lambda: real_render('transition.mp4', two, two['total_output_duration_seconds']))
+              cut = orchestrate_prompts(['A tree in the foreground', 'A house in the middle ground'], default_duration=1.2, preferred_transition='cut')
+              check('render real hard-cut MP4', lambda: real_render('cut.mp4', cut, 2.4))
+
+          report = {'version': '2.4', 'total': len(results), 'passed': sum(r['status']=='passed' for r in results), 'failed': sum(r['status']=='failed' for r in results), 'tests': results}
+          pathlib.Path('validation_report.json').write_text(json.dumps(report, indent=2), encoding='utf-8')
+          print('RESULT:', report['passed'], 'passed;', report['failed'], 'failed', flush=True)
+          if report['failed']:
+              raise SystemExit(1)
+          PY
+      - name: Upload validation report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: melodia-cinematic-video-rendering-validation
+          path: validation_report.json
+          if-no-files-found: warn
