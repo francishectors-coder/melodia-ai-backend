@@ -1,0 +1,581 @@
+
+name: MELODIA AI - Prompt-to-Scene Validation
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - "melodia_prompt_scene_generator.py"
+      - "melodia_automatic_structure_learner.py"
+      - "melodia_component_relationship_learner.py"
+      - "melodia_geometric_object_learner.py"
+      - ".github/workflows/prompt-scene-validation.yml"
+
+jobs:
+  validate-prompt-scenes:
+    name: Validate Prompt-to-Scene Engine V1.6
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Run prompt-to-scene validation
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          import math
+          import re
+          import subprocess
+          import sys
+          import xml.etree.ElementTree as ET
+          from pathlib import Path
+
+          from melodia_geometric_object_learner import EXAMPLES
+          from melodia_automatic_structure_learner import learn_all
+          from melodia_component_relationship_learner import component_bounds
+
+          from melodia_prompt_scene_generator import (
+              VERSION,
+              CANVAS_WIDTH,
+              CANVAS_HEIGHT,
+              PADDING,
+              detect_objects,
+              detect_position,
+              build_scene,
+              render_scene_svg,
+          )
+
+          OUTPUT = Path("melodia_prompt_scene_validation")
+          OUTPUT.mkdir(parents=True, exist_ok=True)
+
+          learned = learn_all(EXAMPLES)
+          results = []
+
+          def check(condition, message):
+              if not condition:
+                  raise AssertionError(message)
+
+          def test(name, function):
+              try:
+                  details = function()
+                  results.append({
+                      "test": name,
+                      "status": "pass",
+                      "details": details,
+                  })
+                  print("PASS:", name)
+              except Exception as exc:
+                  results.append({
+                      "test": name,
+                      "status": "fail",
+                      "error": str(exc),
+                  })
+                  print("FAIL:", name, str(exc))
+
+          def expect_value_error(function):
+              try:
+                  function()
+              except ValueError:
+                  return
+              raise AssertionError(
+                  "Invalid input was accepted"
+              )
+
+          def check_geometry(scene):
+              check(
+                  scene["status"] == "generated",
+                  "Scene was not generated",
+              )
+
+              check(
+                  bool(scene["objects"]),
+                  "Generated scene has no objects",
+              )
+
+              for obj in scene["objects"]:
+                  components = obj["components"]
+
+                  check(
+                      bool(components),
+                      "Object has no components",
+                  )
+
+                  roles = {
+                      part["role"]: part
+                      for part in components
+                  }
+
+                  check(
+                      len(roles) == len(components),
+                      "Duplicate component roles",
+                  )
+
+                  for part in components:
+                      for field in (
+                          "x", "y", "width", "height"
+                      ):
+                          check(
+                              math.isfinite(part[field]),
+                              f"Invalid {field}",
+                          )
+
+                      check(
+                          part["width"] > 0
+                          and part["height"] > 0,
+                          "Invalid component dimensions",
+                      )
+
+                      parent = part["parent"]
+
+                      if parent is not None:
+                          check(
+                              parent in roles,
+                              "Missing parent component",
+                          )
+
+          def check_svg(scene, svg_text):
+              root = ET.fromstring(svg_text)
+              ns = "{http://www.w3.org/2000/svg}"
+
+              check(
+                  root.tag == f"{ns}svg",
+                  "Invalid SVG root",
+              )
+
+              groups = root.findall(f"{ns}g")
+
+              check(
+                  len(groups) == 1,
+                  "Expected one canvas-fit group",
+              )
+
+              transform = groups[0].get(
+                  "transform", ""
+              )
+
+              match = re.fullmatch(
+                  r"translate\("
+                  r"([-+0-9.eE]+)\s+"
+                  r"([-+0-9.eE]+)\)\s+"
+                  r"scale\(([-+0-9.eE]+)\)",
+                  transform,
+              )
+
+              check(
+                  match is not None,
+                  "Invalid canvas-fit transform",
+              )
+
+              tx, ty, factor = map(
+                  float, match.groups()
+              )
+
+              check(
+                  math.isfinite(factor)
+                  and factor > 0,
+                  "Invalid canvas-fit scale",
+              )
+
+              tolerance = 0.003
+
+              for obj in scene["objects"]:
+                  for part in obj["components"]:
+                      left, top, right, bottom = (
+                          component_bounds(
+                              part,
+                              CANVAS_WIDTH,
+                              CANVAS_HEIGHT,
+                          )
+                      )
+
+                      left = factor * left + tx
+                      right = factor * right + tx
+                      top = factor * top + ty
+                      bottom = factor * bottom + ty
+
+                      check(
+                          left >= PADDING - tolerance
+                          and top >= PADDING - tolerance
+                          and right <= CANVAS_WIDTH - PADDING + tolerance
+                          and bottom <= CANVAS_HEIGHT - PADDING + tolerance,
+                          f"Canvas clipping: {obj['category']}",
+                      )
+
+              object_groups = groups[0].findall(
+                  f"{ns}g"
+              )
+
+              check(
+                  len(object_groups) == len(scene["objects"]),
+                  "SVG object count mismatch",
+              )
+
+              return factor
+
+          # Test all five known object categories.
+          for category in sorted(learned):
+
+              def category_test(category=category):
+                  scene = build_scene(
+                      category,
+                      learned,
+                      seed=1337,
+                      variation=0.5,
+                  )
+
+                  check_geometry(scene)
+
+                  check(
+                      len(scene["objects"]) == 1,
+                      "Expected one object",
+                  )
+
+                  check(
+                      scene["objects"][0]["category"] == category,
+                      "Incorrect category",
+                  )
+
+                  svg = render_scene_svg(scene)
+                  factor = check_svg(scene, svg)
+
+                  return {
+                      "category": category,
+                      "fit_factor": factor,
+                  }
+
+              test(
+                  f"category_{category}",
+                  category_test,
+              )
+
+          prompts = {
+              "tree_and_house": "A tree beside a house",
+              "garden": "A house with trees and flowers",
+              "road": "A car beside a truck",
+              "mixed": "An animal near a tree and flower",
+              "five_objects": (
+                  "A tree house car animal flower"
+              ),
+          }
+
+          # Test multiple-object scene generation.
+          for name, prompt in prompts.items():
+
+              def scene_test(
+                  name=name,
+                  prompt=prompt,
+              ):
+                  scene = build_scene(
+                      prompt,
+                      learned,
+                      seed=22,
+                      variation=0.5,
+                  )
+
+                  check_geometry(scene)
+
+                  expected = detect_objects(
+                      prompt,
+                      learned.keys(),
+                  )
+
+                  actual = [
+                      obj["category"]
+                      for obj in scene["objects"]
+                  ]
+
+                  check(
+                      actual == expected,
+                      "Detected objects do not match scene",
+                  )
+
+                  svg = render_scene_svg(scene)
+                  factor = check_svg(scene, svg)
+
+                  folder = OUTPUT / "scenes" / name
+                  folder.mkdir(
+                      parents=True,
+                      exist_ok=True,
+                  )
+
+                  (
+                      folder / "scene_representation.json"
+                  ).write_text(
+                      json.dumps(scene, indent=2),
+                      encoding="utf-8",
+                  )
+
+                  (
+                      folder / "scene_preview.svg"
+                  ).write_text(
+                      svg,
+                      encoding="utf-8",
+                  )
+
+                  return {
+                      "prompt": prompt,
+                      "objects": len(actual),
+                      "fit_factor": factor,
+                  }
+
+              test(
+                  f"multi_object_{name}",
+                  scene_test,
+              )
+
+          def reproducibility_test():
+              first = build_scene(
+                  "A tree beside a house",
+                  learned,
+                  seed=123,
+                  variation=0.8,
+              )
+
+              second = build_scene(
+                  "A tree beside a house",
+                  learned,
+                  seed=123,
+                  variation=0.8,
+              )
+
+              check(
+                  first == second,
+                  "Same seed produced different scenes",
+              )
+
+              return {
+                  "reproducible": True,
+              }
+
+          test(
+              "seed_reproducibility",
+              reproducibility_test,
+          )
+
+          def seed_diversity_test():
+              signatures = set()
+
+              for seed in range(50):
+                  scene = build_scene(
+                      "A tree beside a house",
+                      learned,
+                      seed=seed,
+                      variation=1.0,
+                  )
+
+                  signatures.add(
+                      json.dumps(
+                          [
+                              obj["components"]
+                              for obj in scene["objects"]
+                          ],
+                          sort_keys=True,
+                      )
+                  )
+
+              check(
+                  len(signatures) >= 2,
+                  "Different seeds produced no variation",
+              )
+
+              return {
+                  "distinct_scenes": len(signatures),
+              }
+
+          test(
+              "seed_diversity",
+              seed_diversity_test,
+          )
+
+          def unsupported_prompt_test():
+              scene = build_scene(
+                  "An elephant in a forest",
+                  learned,
+              )
+
+              check(
+                  scene["status"] == "unsupported",
+                  "Unsupported prompt was accepted",
+              )
+
+              return {
+                  "status": scene["status"],
+              }
+
+          test(
+              "unsupported_prompt",
+              unsupported_prompt_test,
+          )
+
+          def empty_prompt_test():
+              expect_value_error(
+                  lambda: build_scene(
+                      "   ",
+                      learned,
+                  )
+              )
+
+          test(
+              "reject_empty_prompt",
+              empty_prompt_test,
+          )
+
+          def invalid_variation_test():
+              expect_value_error(
+                  lambda: build_scene(
+                      "tree",
+                      learned,
+                      variation=2.0,
+                  )
+              )
+
+          test(
+              "reject_invalid_variation",
+              invalid_variation_test,
+          )
+
+          def position_test():
+              expected = {
+                  "tree on the left": "left",
+                  "tree on the right": "right",
+                  "tree above": "top",
+                  "tree below": "bottom",
+                  "tree in the center": "center",
+              }
+
+              for prompt, position in expected.items():
+                  check(
+                      detect_position(prompt) == position,
+                      f"Incorrect position: {prompt}",
+                  )
+
+              return {
+                  "positions": len(expected),
+              }
+
+          test(
+              "global_position_detection",
+              position_test,
+          )
+
+          def cli_test():
+              folder = OUTPUT / "cli_generated"
+
+              subprocess.run(
+                  [
+                      sys.executable,
+                      "melodia_prompt_scene_generator.py",
+                      "--prompt",
+                      "A tree beside a house with flowers",
+                      "--seed",
+                      "1337",
+                      "--variation",
+                      "0.5",
+                      "--output",
+                      str(folder),
+                  ],
+                  check=True,
+                  capture_output=True,
+                  text=True,
+              )
+
+              json_path = (
+                  folder / "scene_representation.json"
+              )
+
+              svg_path = (
+                  folder / "scene_preview.svg"
+              )
+
+              check(
+                  json_path.exists(),
+                  "CLI scene JSON missing",
+              )
+
+              check(
+                  svg_path.exists(),
+                  "CLI SVG preview missing",
+              )
+
+              scene = json.loads(
+                  json_path.read_text(
+                      encoding="utf-8"
+                  )
+              )
+
+              check_geometry(scene)
+
+              check_svg(
+                  scene,
+                  svg_path.read_text(
+                      encoding="utf-8"
+                  ),
+              )
+
+              check(
+                  scene["version"] == VERSION,
+                  "Incorrect engine version",
+              )
+
+              return {
+                  "objects": len(scene["objects"]),
+                  "version": VERSION,
+              }
+
+          test(
+              "cli_generation",
+              cli_test,
+          )
+
+          report = {
+              "project": "MELODIA AI",
+              "version": VERSION,
+              "suite": "prompt_to_scene_validation",
+              "total_tests": len(results),
+              "passed": sum(
+                  item["status"] == "pass"
+                  for item in results
+              ),
+              "failed": sum(
+                  item["status"] == "fail"
+                  for item in results
+              ),
+              "results": results,
+          }
+
+          (
+              OUTPUT / "validation_report.json"
+          ).write_text(
+              json.dumps(report, indent=2),
+              encoding="utf-8",
+          )
+
+          print(
+              json.dumps({
+                  "total": report["total_tests"],
+                  "passed": report["passed"],
+                  "failed": report["failed"],
+              }, indent=2)
+          )
+
+          if report["failed"]:
+              sys.exit(1)
+          PY
+
+      - name: Upload validation artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: melodia-prompt-scene-validation
+          path: melodia_prompt_scene_validation/
+          if-no-files-found: warn
+          retention-days: 30
