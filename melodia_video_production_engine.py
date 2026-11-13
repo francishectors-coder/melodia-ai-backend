@@ -79,8 +79,8 @@ def _make_ass(plan, path, width, height, bilingual_language=None):
 
     font_size = 32 if width > height else 27
 
-    # Noto Sans Tamil supports Tamil text and Latin characters.
-    # MarginV=110 raises captions above the bottom playback controls.
+    # Noto Sans Tamil supports Tamil and Latin text.
+    # MarginV=110 keeps captions above the bottom edge.
     lines = [
         "[Script Info]",
         "ScriptType: v4.00+",
@@ -123,7 +123,6 @@ def _make_ass(plan, path, width, height, bilingual_language=None):
         ):
             raise ValueError(f"Invalid scene timeline {i}")
 
-        # Avoid overlapping captions during cinematic crossfades.
         if i + 1 < len(timeline):
             end = min(
                 end,
@@ -244,6 +243,14 @@ def produce_video(
 
     width, height = ASPECTS[aspect]
 
+    # V2.6 duration synchronization correction:
+    # Read the planned duration once and use it
+    # to limit both audio and final MP4 output.
+    target_duration = _positive(
+        plan.get("total_output_duration_seconds"),
+        "planned video duration"
+    )
+
     destination = Path(output).resolve()
     destination.parent.mkdir(
         parents=True,
@@ -311,16 +318,21 @@ def produce_video(
                 "-map",
                 "1:a:0",
                 "-af",
-                f"volume={volume:.6f}",
+                (
+                    f"volume={volume:.6f},"
+                    f"atrim=duration={target_duration:.6f},"
+                    "asetpts=PTS-STARTPTS"
+                ),
                 "-c:a",
                 "aac",
                 "-b:a",
                 "128k",
-                "-shortest",
             ]
         else:
             command += ["-an"]
 
+        # Explicitly restrict output duration.
+        # Do not rely on -shortest with looping audio.
         command += [
             "-c:v",
             "libx264",
@@ -330,6 +342,8 @@ def produce_video(
             "22",
             "-pix_fmt",
             "yuv420p",
+            "-t",
+            f"{target_duration:.6f}",
             "-movflags",
             "+faststart",
             str(destination),
@@ -347,9 +361,7 @@ def produce_video(
         "caption_events": caption_count,
         "bilingual_language": bilingual_language,
         "music": bool(music_path),
-        "expected_duration_seconds": plan[
-            "total_output_duration_seconds"
-        ],
+        "expected_duration_seconds": target_duration,
     }
 
 
