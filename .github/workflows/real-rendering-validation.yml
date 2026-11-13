@@ -1,0 +1,137 @@
+
+name: MELODIA V2.6 Real Rendering Validation
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  real-rendering:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            ffmpeg \
+            fonts-noto-core \
+            fonts-noto-extra \
+            libcairo2
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install cairosvg pillow
+
+      - name: Validate Python modules
+        run: |
+          python -m py_compile \
+            melodia_scene_depth_engine.py \
+            melodia_cinematic_orchestration_engine.py \
+            melodia_cinematic_video_renderer.py \
+            melodia_video_production_engine.py \
+            melodia_automatic_video_pipeline.py
+
+      - name: Render real MELODIA video
+        run: |
+          mkdir -p validation_output
+
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          from melodia_cinematic_orchestration_engine import (
+              orchestrate_prompts
+          )
+          from melodia_video_production_engine import (
+              produce_video
+          )
+
+          output_dir = Path("validation_output")
+
+          prompts = [
+              "A red circle above a blue rectangle",
+              "A yellow triangle beside a green circle",
+          ]
+
+          print("Starting real V2.3 orchestration")
+
+          plan = orchestrate_prompts(
+              prompts,
+              seed=1337,
+              variation=0.5,
+              default_duration=2.0,
+          )
+
+          print("Orchestration completed")
+
+          print("Starting real V2.4 and V2.5 rendering")
+
+          result = produce_video(
+              plan,
+              output_dir / "melodia_real_render.mp4",
+              aspect="16:9",
+              fps=24,
+              captions=False,
+          )
+
+          print("Rendering completed")
+
+          (output_dir / "plan.json").write_text(
+              json.dumps(
+                  plan,
+                  indent=2,
+                  ensure_ascii=False,
+                  default=str,
+              ),
+              encoding="utf-8",
+          )
+
+          (output_dir / "result.json").write_text(
+              json.dumps(
+                  result,
+                  indent=2,
+                  ensure_ascii=False,
+              ),
+              encoding="utf-8",
+          )
+
+          print(json.dumps(result, indent=2))
+          PY
+
+      - name: Verify generated MP4
+        run: |
+          test -s validation_output/melodia_real_render.mp4
+
+          ffprobe \
+            -v error \
+            -show_entries format=duration \
+            -of default=noprint_wrappers=1 \
+            validation_output/melodia_real_render.mp4
+
+          ffprobe \
+            -v error \
+            -select_streams v:0 \
+            -show_entries stream=codec_name,width,height \
+            -of default=noprint_wrappers=1 \
+            validation_output/melodia_real_render.mp4
+
+      - name: Upload validation artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: melodia-v26-real-rendering-samples
+          path: validation_output/
+          if-no-files-found: warn
