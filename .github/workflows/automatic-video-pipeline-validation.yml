@@ -1,0 +1,361 @@
+
+name: MELODIA V2.6 Automatic Video Pipeline Validation
+
+on:
+  push:
+    paths:
+      - 'melodia_automatic_video_pipeline.py'
+      - 'melodia_video_production_engine.py'
+      - '.github/workflows/automatic-video-pipeline-validation.yml'
+  pull_request:
+    paths:
+      - 'melodia_automatic_video_pipeline.py'
+      - 'melodia_video_production_engine.py'
+      - '.github/workflows/automatic-video-pipeline-validation.yml'
+  workflow_dispatch:
+
+jobs:
+  validate-automatic-video-pipeline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install video and font dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y \
+            ffmpeg libass9 \
+            fonts-dejavu-core \
+            fonts-noto-core \
+            fonts-noto-extra
+          ffmpeg -version | head -n 1
+
+      - name: Verify Python syntax
+        run: |
+          python -m py_compile \
+            melodia_automatic_video_pipeline.py \
+            melodia_video_production_engine.py
+
+      - name: Validate V2.6 and generate sample videos
+        shell: bash
+        run: |
+          mkdir -p artifacts
+
+          python - <<'PY'
+          import json
+          import subprocess
+          import sys
+          import types
+          from pathlib import Path
+          from unittest.mock import patch
+
+          # Replace V2.3 and V2.4 dependencies only
+          # within this isolated integration test.
+          orchestration_stub = types.ModuleType(
+              "melodia_cinematic_orchestration_engine"
+          )
+          orchestration_stub.orchestrate_prompts = (
+              lambda *args, **kwargs: None
+          )
+          sys.modules[
+              "melodia_cinematic_orchestration_engine"
+          ] = orchestration_stub
+
+          renderer_stub = types.ModuleType(
+              "melodia_cinematic_video_renderer"
+          )
+          renderer_stub.render_video = (
+              lambda *args, **kwargs: None
+          )
+          sys.modules[
+              "melodia_cinematic_video_renderer"
+          ] = renderer_stub
+
+          import melodia_automatic_video_pipeline as pipeline
+          import melodia_video_production_engine as production
+
+          output_dir = Path("artifacts")
+          output_dir.mkdir(exist_ok=True)
+
+          def fake_orchestration(prompts, **kwargs):
+              duration = kwargs["default_duration"]
+              overlap = kwargs["transition_duration"]
+
+              scenes = []
+              timeline = []
+              elapsed = 0.0
+
+              for index, prompt in enumerate(prompts):
+                  scenes.append({
+                      "status": "generated",
+                      "prompt": prompt,
+                      "objects": [],
+                      "duration": duration,
+                  })
+                  timeline.append({
+                      "scene_index": index,
+                      "start_seconds": elapsed,
+                      "end_seconds": elapsed + duration,
+                      "duration_seconds": duration,
+                  })
+                  elapsed += duration
+                  if index < len(prompts) - 1:
+                      elapsed -= overlap
+
+              return {
+                  "version": "2.3",
+                  "scenes": scenes,
+                  "scene_timeline": timeline,
+                  "total_output_duration_seconds": elapsed,
+                  "engine_versions": {
+                      "depth": "1.9",
+                      "continuity": "2.0",
+                      "camera": "2.1",
+                      "transitions": "2.2",
+                  },
+              }
+
+          def fake_render(
+              plan, output, *,
+              width, height, fps, ffmpeg
+          ):
+              duration = plan[
+                  "total_output_duration_seconds"
+              ]
+              subprocess.run([
+                  ffmpeg,
+                  "-hide_banner",
+                  "-loglevel", "error",
+                  "-y",
+                  "-f", "lavfi",
+                  "-i",
+                  (
+                      f"color=c=navy:"
+                      f"s={width}x{height}:"
+                      f"r={fps}:d={duration}"
+                  ),
+                  "-an",
+                  "-c:v", "libx264",
+                  "-preset", "ultrafast",
+                  "-pix_fmt", "yuv420p",
+                  str(output),
+              ], check=True)
+              return {"version": "2.4"}
+
+          def probe(path):
+              raw = subprocess.check_output([
+                  "ffprobe",
+                  "-v", "error",
+                  "-show_entries",
+                  "stream=codec_type,width,height:"
+                  "format=duration",
+                  "-of", "json",
+                  str(path),
+              ], text=True)
+              return json.loads(raw)
+
+          def check_video(path, dimensions, audio=False):
+              assert path.is_file()
+              assert path.stat().st_size > 0
+
+              info = probe(path)
+              streams = info["streams"]
+
+              video = next(
+                  s for s in streams
+                  if s["codec_type"] == "video"
+              )
+              assert (
+                  video["width"], video["height"]
+              ) == dimensions
+
+              has_audio = any(
+                  s["codec_type"] == "audio"
+                  for s in streams
+              )
+              assert has_audio == audio
+
+              actual_duration = float(
+                  info["format"]["duration"]
+              )
+              assert abs(actual_duration - 1.2) < 0.3
+
+          def expect_error(error_type, callback):
+              try:
+                  callback()
+              except error_type:
+                  return
+              raise AssertionError(
+                  f"Expected {error_type.__name__}"
+              )
+
+          with (
+              patch.object(
+                  pipeline,
+                  "orchestrate_prompts",
+                  fake_orchestration
+              ),
+              patch.object(
+                  production,
+                  "render_video",
+                  fake_render
+              ),
+          ):
+              landscape = output_dir / "landscape.mp4"
+
+              result = pipeline.generate_video(
+                  "geometric landscape",
+                  landscape,
+                  english_captions=[
+                      "Peace and hope"
+                  ],
+                  bilingual_language="ta",
+                  translated_captions=[
+                      "அமைதியும் நம்பிக்கையும்"
+                  ],
+                  scene_duration=1.2,
+                  aspect="16:9",
+                  fps=10,
+              )
+
+              assert result["version"] == "2.6"
+              assert result["scene_count"] == 1
+              assert result["video"]["caption_events"] == 1
+
+              check_video(
+                  landscape, (1280, 720)
+              )
+              print("PASS: landscape bilingual MP4")
+
+              portrait = output_dir / "portrait.mp4"
+
+              pipeline.generate_video(
+                  "geometric portrait",
+                  portrait,
+                  english_captions=[
+                      "A peaceful moment"
+                  ],
+                  scene_duration=1.2,
+                  aspect="9:16",
+                  fps=10,
+              )
+
+              check_video(
+                  portrait, (720, 1280)
+              )
+              print("PASS: portrait English MP4")
+
+              music_file = output_dir / "test_audio.wav"
+
+              subprocess.run([
+                  "ffmpeg",
+                  "-hide_banner",
+                  "-loglevel", "error",
+                  "-y",
+                  "-f", "lavfi",
+                  "-i",
+                  "sine=frequency=440:duration=1",
+                  "-c:a", "pcm_s16le",
+                  str(music_file),
+              ], check=True)
+
+              music_video = output_dir / "music.mp4"
+
+              pipeline.generate_video(
+                  "geometric music scene",
+                  music_video,
+                  scene_duration=1.2,
+                  fps=10,
+                  music=music_file,
+              )
+
+              check_video(
+                  music_video,
+                  (1280, 720),
+                  audio=True,
+              )
+              print("PASS: MP4 with audio")
+
+              expect_error(
+                  ValueError,
+                  lambda: pipeline.generate_video(
+                      "",
+                      output_dir / "invalid.mp4"
+                  )
+              )
+
+              expect_error(
+                  ValueError,
+                  lambda: pipeline.generate_video(
+                      "scene",
+                      output_dir / "invalid.mp4",
+                      scene_duration=601,
+                  )
+              )
+
+              expect_error(
+                  ValueError,
+                  lambda: pipeline.generate_video(
+                      "scene",
+                      output_dir / "invalid.mp4",
+                      bilingual_language="ta",
+                  )
+              )
+
+              expect_error(
+                  ValueError,
+                  lambda: pipeline.generate_video(
+                      "scene",
+                      output_dir / "invalid.mp4",
+                      scene_duration=1,
+                      scene_prompts=["one", "two"],
+                      transition_duration=1,
+                  )
+              )
+
+              print("PASS: input validation")
+
+          manifest = {
+              "version": "2.6",
+              "test_type": "mocked integration",
+              "real_geometric_renderer_tested": False,
+              "videos": [
+                  "landscape.mp4",
+                  "portrait.mp4",
+                  "music.mp4",
+              ],
+              "note": (
+                  "Sample videos use a synthetic blue "
+                  "background. Real V1.9-V2.4 rendering "
+                  "requires separate end-to-end tests."
+              ),
+          }
+
+          (output_dir / "validation.json").write_text(
+              json.dumps(
+                  manifest,
+                  indent=2,
+                  ensure_ascii=False
+              ),
+              encoding="utf-8",
+          )
+
+          print("MELODIA V2.6 validation completed")
+          PY
+
+      - name: Upload downloadable video artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: melodia-v26-pipeline-samples
+          path: artifacts/
+          if-no-files-found: error
+          retention-days: 7
