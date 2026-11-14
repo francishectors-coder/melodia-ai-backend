@@ -1,5 +1,4 @@
-
-name: MELODIA V2.6 Real Rendering Validation
+name: MELODIA V2.6 Bilingual Rendering and Geometry Validation
 
 on:
   workflow_dispatch:
@@ -11,7 +10,6 @@ jobs:
   real-rendering:
     runs-on: ubuntu-latest
     timeout-minutes: 15
-
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -24,11 +22,9 @@ jobs:
       - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y \
-            ffmpeg \
-            fonts-noto-core \
-            fonts-noto-extra \
-            libcairo2
+          sudo apt-get install -y ffmpeg fonts-noto-core fonts-noto-extra libcairo2
+          fc-match 'Noto Sans Tamil'
+          ffmpeg -hide_banner -filters | grep -E ' ass | subtitles '
 
       - name: Install Python dependencies
         run: |
@@ -38,110 +34,137 @@ jobs:
       - name: Validate Python modules
         run: |
           python -m py_compile \
+            melodia_automatic_scene_composer.py \
             melodia_scene_depth_engine.py \
+            melodia_scene_continuity_engine.py \
             melodia_cinematic_orchestration_engine.py \
             melodia_cinematic_video_renderer.py \
             melodia_video_production_engine.py \
             melodia_automatic_video_pipeline.py
 
-      - name: Render real MELODIA video
+      - name: Render and inspect bilingual MELODIA video
         run: |
           mkdir -p validation_output
+          python - <<'PY'
+          import json
+          import subprocess
+          from pathlib import Path
 
+          from melodia_cinematic_orchestration_engine import orchestrate_prompts
+          from melodia_automatic_scene_composer import object_bounds
+          from melodia_video_production_engine import produce_video
+
+          out = Path('validation_output')
+          prompts = [
+              'A tree to the left of a house and a flower to the right of the house at sunset',
+              'A house beside a tree and a flower near the tree at night',
+          ]
+          english = [
+              'A peaceful garden at sunset.',
+              'A quiet garden beneath the night sky.',
+          ]
+          tamil = [
+              'சூரிய அஸ்தமனத்தில் அமைதியான தோட்டம்.',
+              'இரவு வானத்தின் கீழ் அமைதியான தோட்டம்.',
+          ]
+
+          plan = orchestrate_prompts(
+              prompts, seed=1337, variation=0.5,
+              default_duration=4.0, camera_intensity=0.0,
+              transition_duration=0.5,
+          )
+
+          geometry_report = []
+          violations = []
+          for i, scene in enumerate(plan['scenes']):
+              objects = []
+              for obj in scene['objects']:
+                  left, top, right, bottom = object_bounds(obj)
+                  objects.append({
+                      'id': obj['id'], 'category': obj['category'],
+                      'depth': obj.get('depth'),
+                      'bounds': [round(v, 6) for v in (left, top, right, bottom)],
+                  })
+              # Check horizontal separation between the three requested objects.
+              # This is deliberately stricter than merely checking canvas bounds.
+              ordered = sorted(objects, key=lambda o: o['bounds'][0])
+              gaps = []
+              for left_obj, right_obj in zip(ordered, ordered[1:]):
+                  gap = right_obj['bounds'][0] - left_obj['bounds'][2]
+                  gaps.append(round(gap, 6))
+                  if gap < 0.01:
+                      violations.append(
+                          f"scene {i}: {left_obj['category']} and "
+                          f"{right_obj['category']} have horizontal gap {gap:.4f}"
+                      )
+              geometry_report.append({'scene': i, 'objects': objects, 'gaps': gaps})
+
+              captions = dict(scene.get('captions') or {})
+              captions['en'] = english[i]
+              captions['ta'] = tamil[i]
+              scene['captions'] = captions
+
+          (out / 'geometry_report.json').write_text(
+              json.dumps(geometry_report, indent=2, ensure_ascii=False), encoding='utf-8'
+          )
+          (out / 'plan.json').write_text(
+              json.dumps(plan, indent=2, ensure_ascii=False), encoding='utf-8'
+          )
+          print('GEOMETRY REPORT:', json.dumps(geometry_report, indent=2))
+          if violations:
+              print('GEOMETRY WARNING:', '; '.join(violations))
+
+          # Generate a short original instrumental test bed from pure tones.
+          # This validates audio mixing; it is not the future music-generation engine.
+          music = out / 'instrumental_test.wav'
+          subprocess.run([
+              'ffmpeg', '-hide_banner', '-loglevel', 'error', '-y',
+              '-f', 'lavfi', '-i', 'sine=frequency=261.63:duration=8',
+              '-f', 'lavfi', '-i', 'sine=frequency=329.63:duration=8',
+              '-f', 'lavfi', '-i', 'sine=frequency=392.00:duration=8',
+              '-filter_complex',
+              '[0:a]volume=0.20[a0];[1:a]volume=0.14[a1];'
+              '[2:a]volume=0.10[a2];[a0][a1][a2]amix=inputs=3:duration=longest,'
+              'afade=t=in:st=0:d=0.4,afade=t=out:st=7.1:d=0.8[a]',
+              '-map', '[a]', '-c:a', 'pcm_s16le', str(music),
+          ], check=True)
+
+          result = produce_video(
+              plan, out / 'melodia_bilingual_test.mp4',
+              aspect='16:9', fps=24, captions=True,
+              bilingual_language='ta', music=music, music_volume=0.30,
+          )
+          if result['caption_events'] != len(prompts):
+              raise AssertionError('Expected one bilingual caption event per scene')
+          if not result['music'] or result['bilingual_language'] != 'ta':
+              raise AssertionError('Audio or Tamil captions were not enabled')
+          (out / 'result.json').write_text(
+              json.dumps(result, indent=2, ensure_ascii=False), encoding='utf-8'
+          )
+          print('PRODUCTION RESULT:', json.dumps(result, indent=2, ensure_ascii=False))
+          if violations:
+              raise AssertionError('Rendered video has overlapping scene geometry: ' + '; '.join(violations))
+          PY
+
+      - name: Verify video and audio streams
+        run: |
+          test -s validation_output/melodia_bilingual_test.mp4
+          ffprobe -v error -show_entries stream=codec_type,codec_name,width,height \
+            -of json validation_output/melodia_bilingual_test.mp4 \
+            > validation_output/streams.json
           python - <<'PY'
           import json
           from pathlib import Path
-
-          from melodia_cinematic_orchestration_engine import (
-              orchestrate_prompts
-          )
-          from melodia_video_production_engine import (
-              produce_video
-          )
-
-          output_dir = Path("validation_output")
-
-          # Use objects supported by the V1.1 learner.
-          # Spatial relationships are supported by V1.7.
-          # Sunset and night themes are supported by V1.8.
-
-          prompts = [
-              "A tree to the left of a house and a flower to the right of the house at sunset",
-              "A house beside a tree and a flower near the tree at night",
-          ]
-
-          print("Starting real V2.3 orchestration")
-
-          plan = orchestrate_prompts(
-              prompts,
-              seed=1337,
-              variation=0.5,
-              default_duration=2.0,
-          )
-
-          print("Orchestration completed")
-          print("Scene count:", plan["scene_count"])
-          print(
-              "Expected output duration:",
-              plan["total_output_duration_seconds"],
-          )
-
-          print("Starting real V2.4 and V2.5 rendering")
-
-          result = produce_video(
-              plan,
-              output_dir / "melodia_real_render.mp4",
-              aspect="16:9",
-              fps=24,
-              captions=False,
-          )
-
-          print("Rendering completed")
-
-          (output_dir / "plan.json").write_text(
-              json.dumps(
-                  plan,
-                  indent=2,
-                  ensure_ascii=False,
-                  default=str,
-              ),
-              encoding="utf-8",
-          )
-
-          (output_dir / "result.json").write_text(
-              json.dumps(
-                  result,
-                  indent=2,
-                  ensure_ascii=False,
-                  default=str,
-              ),
-              encoding="utf-8",
-          )
-
-          print(json.dumps(result, indent=2, default=str))
+          streams = json.loads(Path('validation_output/streams.json').read_text())['streams']
+          assert any(s.get('codec_type') == 'video' for s in streams), 'Video missing'
+          assert any(s.get('codec_type') == 'audio' for s in streams), 'Audio missing'
+          print('Audio and video streams verified')
           PY
-
-      - name: Verify generated MP4
-        run: |
-          test -s validation_output/melodia_real_render.mp4
-
-          ffprobe \
-            -v error \
-            -show_entries format=duration \
-            -of default=noprint_wrappers=1 \
-            validation_output/melodia_real_render.mp4
-
-          ffprobe \
-            -v error \
-            -select_streams v:0 \
-            -show_entries stream=codec_name,width,height \
-            -of default=noprint_wrappers=1 \
-            validation_output/melodia_real_render.mp4
 
       - name: Upload validation artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: melodia-v26-real-rendering-samples
+          name: melodia-v26-bilingual-geometry-test
           path: validation_output/
           if-no-files-found: warn
