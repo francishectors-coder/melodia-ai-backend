@@ -373,44 +373,16 @@ def generate_depth_scene(
 
 
 def render_depth_svg(scene):
-    """Render environment with objects ordered back-to-front."""
+    """Render all depth-sorted objects in one shared SVG coordinate system.
 
+    Rendering objects separately invokes V1.6 canvas fitting for each object,
+    which recenters each one and causes apparent overlap. The V1.8 renderer
+    handles the complete scene in one pass and retains the depth-sorted order.
+    """
     if scene["status"] != "generated":
-        raise ValueError(
-            "Cannot render unsupported scene"
-        )
+        raise ValueError("Cannot render unsupported scene")
 
-    # Reuse V1.8 environment rendering.
-    environment_svg = ET.fromstring(
-        render_composed_svg(scene)
-    )
-
-    namespace = (
-        "{http://www.w3.org/2000/svg}"
-    )
-
-    # Remove previously rendered object groups.
-    for child in list(environment_svg):
-        if child.tag == namespace + "g":
-            environment_svg.remove(child)
-
-    # Render one object at a time to preserve depth order.
-    for obj in scene["objects"]:
-        isolated = copy.deepcopy(scene)
-        isolated["objects"] = [obj]
-
-        object_svg = ET.fromstring(
-            render_scene_svg(isolated)
-        )
-
-        for child in object_svg:
-            if child.tag == namespace + "g":
-                environment_svg.append(child)
-
-    return ET.tostring(
-        environment_svg,
-        encoding="unicode",
-    )
+    return render_composed_svg(scene)
 
 
 def main():
