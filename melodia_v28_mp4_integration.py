@@ -1,27 +1,12 @@
 
 """
-MELODIA AI V2.8
-Prompt-to-MP4 Production Integration
+MELODIA AI V2.8 - Prompt-to-MP4 Integration
 
-Connects:
-    V2.8 Prompt Scene Engine
-    V2.8 Cinematic Integration
-    V2.5 Video Production Engine
+Converts V2.8 cinematic scene plans into V1.9-compatible
+geometric scenes before invoking the existing V2.5
+production engine.
 
-Features:
-    - One-prompt cinematic MP4 production
-    - English captions
-    - Optional user-supplied bilingual captions
-    - Optional instrumental background music
-    - Landscape 16:9 and portrait 9:16
-    - Exact-duration cinematic planning
-    - Existing engines remain unchanged
-
-Requirements:
-    Python 3.11+
-    FFmpeg and FFprobe
-    CairoSVG
-    Existing MELODIA AI engine modules
+Earlier MELODIA engines remain unchanged.
 """
 
 from __future__ import annotations
@@ -35,9 +20,21 @@ from pathlib import Path
 from melodia_prompt_cinematic_integration import (
     generate_cinematic_plan,
 )
+from melodia_video_production_engine import produce_video
 
-from melodia_video_production_engine import (
-    produce_video,
+from melodia_geometric_object_learner import EXAMPLES
+from melodia_automatic_structure_learner import learn_all
+from melodia_component_relationship_learner import reconstruct
+from melodia_prompt_scene_generator import place_object
+from melodia_automatic_scene_composer import (
+    detect_theme,
+    THEMES,
+    GROUND_Y,
+    object_bounds,
+)
+from melodia_scene_depth_engine import (
+    DEPTH_LAYERS,
+    validate_depth_geometry,
 )
 
 VERSION = "2.8"
@@ -45,6 +42,20 @@ VERSION = "2.8"
 ASPECTS = {
     "16:9": (1280, 720),
     "9:16": (720, 1280),
+}
+
+GEOMETRIC_CATEGORIES = {
+    "tree",
+    "house",
+    "flower",
+    "animal",
+    "vehicle",
+}
+
+DEPTH_SIZES = {
+    "background": 0.16,
+    "middle": 0.23,
+    "foreground": 0.29,
 }
 
 
@@ -58,7 +69,6 @@ def _positive_number(value, label):
         raise ValueError(
             f"{label} must be a positive finite number"
         )
-
     return float(value)
 
 
@@ -66,32 +76,20 @@ def _validate_language(language):
     if language is None:
         return None
 
-    if (
-        not isinstance(language, str)
-        or not language.strip()
-        or language.strip().lower() == "en"
-    ):
+    if not isinstance(language, str):
+        raise ValueError("Invalid second language")
+
+    language = language.strip().lower()
+
+    if not language or language == "en":
         raise ValueError(
-            "Second language must be a non-English code"
+            "Second language must be non-English"
         )
 
-    return language.strip().lower()
+    return language
 
 
 def _load_bilingual_captions(source):
-    """
-    Load optional user-provided translations.
-
-    Accepted JSON format:
-
-    {
-        "scene_001": "Translated text",
-        "scene_002": "Translated text"
-    }
-
-    No automatic translation is performed.
-    """
-
     if source is None:
         return {}
 
@@ -108,16 +106,203 @@ def _load_bilingual_captions(source):
         )
 
     for key, value in data.items():
-        if (
-            not isinstance(key, str)
-            or not isinstance(value, str)
-        ):
-            raise ValueError(
-                "Bilingual caption keys and values "
-                "must be strings"
-            )
+        if not isinstance(key, str):
+            raise ValueError("Invalid translation key")
+        if not isinstance(value, str):
+            raise ValueError("Invalid translation text")
 
     return data
+
+
+def _convert_object(obj, learned, seed):
+    """
+    Construct drawable components while preserving
+    V2.8 object identity and planned center.
+    """
+
+    if not isinstance(obj, dict):
+        raise ValueError("Invalid V2.8 object")
+
+    category = obj.get("category")
+
+    if category not in GEOMETRIC_CATEGORIES:
+        raise ValueError(
+            f"Geometric renderer does not yet support "
+            f"category: {category}"
+        )
+
+    if category not in learned:
+        raise ValueError(
+            f"No learned geometry for {category}"
+        )
+
+    identity = obj.get("id")
+    continuity_id = obj.get("continuity_id")
+
+    if not isinstance(identity, str) or not identity:
+        raise ValueError("Missing object identity")
+
+    if (
+        not isinstance(continuity_id, str)
+        or not continuity_id
+    ):
+        raise ValueError("Missing continuity identity")
+
+    center = obj.get("center")
+
+    if not isinstance(center, dict):
+        raise ValueError("Missing object center")
+
+    x = center.get("x")
+    y = center.get("y")
+
+    for name, value in (("x", x), ("y", y)):
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(value)
+            or not 0 <= value <= 1
+        ):
+            raise ValueError(
+                f"Invalid object center {name}"
+            )
+
+    depth = obj.get("depth", "middle")
+
+    if depth not in DEPTH_LAYERS:
+        raise ValueError(
+            f"Unsupported depth layer: {depth}"
+        )
+
+    representation = reconstruct(
+        category,
+        learned,
+        scale=1.0,
+        variation=0.0,
+        seed=seed,
+    )
+
+    if representation.get("status") != "generated":
+        raise ValueError(
+            f"Could not reconstruct {category}"
+        )
+
+    components = place_object(
+        representation["components"],
+        (float(x), float(y)),
+        DEPTH_SIZES[depth],
+    )
+
+    result = {
+        "id": identity,
+        "category": category,
+        "continuity_id": continuity_id,
+        "center": {
+            "x": float(x),
+            "y": float(y),
+        },
+        "depth": depth,
+        "depth_order": DEPTH_LAYERS[depth]["order"],
+        "depth_scale": DEPTH_LAYERS[depth]["scale"],
+        "depth_ground_y": (
+            DEPTH_LAYERS[depth]["ground_y"]
+        ),
+        "seed": seed,
+        "components": components,
+    }
+
+    # Confirm the generated object remains drawable.
+    left, top, right, bottom = object_bounds(result)
+
+    if (
+        left < -0.00001
+        or top < -0.00001
+        or right > 1.00001
+        or bottom > 1.00001
+    ):
+        raise ValueError(
+            f"Object geometry outside canvas: {identity}"
+        )
+
+    return result
+
+
+def _convert_scene(scene, learned, seed):
+    """
+    Convert one V2.8 scene into a V1.9-compatible
+    geometric scene without replanning positions.
+    """
+
+    if not isinstance(scene, dict):
+        raise ValueError("Invalid cinematic scene")
+
+    description = scene.get("description", "")
+
+    if (
+        not isinstance(description, str)
+        or not description.strip()
+    ):
+        raise ValueError(
+            "Cinematic scene description missing"
+        )
+
+    source_objects = scene.get("objects")
+
+    if (
+        not isinstance(source_objects, list)
+        or not source_objects
+    ):
+        raise ValueError(
+            "Cinematic scene contains no objects"
+        )
+
+    objects = []
+
+    for obj in source_objects:
+        objects.append(
+            _convert_object(
+                obj,
+                learned,
+                seed,
+            )
+        )
+
+    objects.sort(
+        key=lambda item: (
+            item["depth_order"],
+            item["id"],
+        )
+    )
+
+    theme = detect_theme(description)
+
+    result = copy.deepcopy(scene)
+
+    result["status"] = "generated"
+    result["version"] = "1.9"
+    result["base_version"] = "2.8"
+    result["prompt"] = description
+    result["theme"] = theme
+    result["objects"] = objects
+
+    result["canvas"] = {
+        "width": 1024,
+        "height": 576,
+    }
+
+    result["depth_layers"] = copy.deepcopy(
+        DEPTH_LAYERS
+    )
+
+    result["environment"] = {
+        "sky_color": THEMES[theme]["sky"],
+        "ground_color": THEMES[theme]["ground"],
+        "ground_y": GROUND_Y,
+    }
+
+    validate_depth_geometry(result)
+
+    return result
 
 
 def prepare_production_plan(
@@ -127,10 +312,8 @@ def prepare_production_plan(
     bilingual_captions=None,
 ):
     """
-    Convert a V2.8 integration result into a V2.3
-    plan suitable for the V2.5 production engine.
-
-    The original integration result is not modified.
+    Prepare a V2.3 orchestration plan for the
+    existing V2.4/V2.5 rendering pipeline.
     """
 
     if not isinstance(integration_result, dict):
@@ -140,7 +323,7 @@ def prepare_production_plan(
 
     if integration_result.get("version") != VERSION:
         raise ValueError(
-            "Expected a V2.8 integration result"
+            "Expected V2.8 integration result"
         )
 
     language = _validate_language(
@@ -153,8 +336,7 @@ def prepare_production_plan(
 
     if translations and language is None:
         raise ValueError(
-            "A second language must be selected "
-            "when bilingual captions are provided"
+            "Select a second language for translations"
         )
 
     cinematic = integration_result.get(
@@ -162,13 +344,11 @@ def prepare_production_plan(
     )
 
     if not isinstance(cinematic, dict):
-        raise ValueError(
-            "Missing cinematic plan"
-        )
+        raise ValueError("Missing cinematic plan")
 
     if cinematic.get("version") != "2.3":
         raise ValueError(
-            "Expected a V2.3 cinematic plan"
+            "Expected V2.3 orchestration plan"
         )
 
     plan = copy.deepcopy(cinematic)
@@ -176,35 +356,29 @@ def prepare_production_plan(
     scenes = plan.get("scenes")
 
     if not isinstance(scenes, list) or not scenes:
-        raise ValueError(
-            "Cinematic plan contains no scenes"
-        )
+        raise ValueError("Missing cinematic scenes")
+
+    learned = learn_all(EXAMPLES)
+
+    converted = []
 
     for index, scene in enumerate(scenes):
-        if not isinstance(scene, dict):
-            raise ValueError(
-                f"Invalid scene {index + 1}"
-            )
+        converted_scene = _convert_scene(
+            scene,
+            learned,
+            seed=1337,
+        )
 
-        scene_id = scene.get(
+        scene_id = converted_scene.get(
             "scene_id",
             f"scene_{index + 1:03d}",
         )
 
-        description = scene.get("description", "")
+        description = converted_scene["description"]
 
-        if (
-            not isinstance(description, str)
-            or not description.strip()
-        ):
-            raise ValueError(
-                f"Scene {index + 1} has no "
-                "English description"
-            )
-
-        english = description.strip()
-
-        captions = scene.get("captions", {})
+        captions = converted_scene.get(
+            "captions", {}
+        )
 
         if captions is None:
             captions = {}
@@ -216,18 +390,18 @@ def prepare_production_plan(
 
         captions = dict(captions)
 
-        existing_english = captions.get(
+        english = captions.get(
             "en",
-            scene.get("caption_en", ""),
+            converted_scene.get("caption_en", ""),
         )
 
         if (
-            isinstance(existing_english, str)
-            and existing_english.strip()
+            not isinstance(english, str)
+            or not english.strip()
         ):
-            english = existing_english.strip()
+            english = description
 
-        captions["en"] = english
+        captions["en"] = english.strip()
 
         if language is not None:
             translated = translations.get(scene_id)
@@ -235,7 +409,11 @@ def prepare_production_plan(
             if translated is not None:
                 captions[language] = translated
 
-        scene["captions"] = captions
+        converted_scene["captions"] = captions
+
+        converted.append(converted_scene)
+
+    plan["scenes"] = converted
 
     return plan
 
@@ -260,29 +438,22 @@ def produce_v28_video(
     ffmpeg="ffmpeg",
 ):
     """
-    Generate a cinematic MP4 from a prompt or
-    a previously generated V2.8 integration plan.
-
-    Exactly one input source must be supplied.
+    Render an MP4 from a prompt or an existing
+    V2.8 cinematic integration result.
     """
 
     if (prompt is None) == (
         integration_result is None
     ):
         raise ValueError(
-            "Provide either a prompt or "
-            "an integration result, not both"
+            "Provide exactly one input source"
         )
 
     if aspect_ratio not in ASPECTS:
-        raise ValueError(
-            "Unsupported aspect ratio"
-        )
+        raise ValueError("Unsupported aspect ratio")
 
     if not isinstance(captions, bool):
-        raise ValueError(
-            "captions must be boolean"
-        )
+        raise ValueError("captions must be boolean")
 
     if prompt is not None:
         integration_result = generate_cinematic_plan(
@@ -295,14 +466,17 @@ def produce_v28_video(
             seed=seed,
         )
     else:
-        plan_aspect = integration_result.get(
-            "aspect_ratio"
-        )
-
-        if plan_aspect != aspect_ratio:
+        if not isinstance(integration_result, dict):
             raise ValueError(
-                "Requested aspect ratio differs "
-                "from the existing cinematic plan"
+                "Invalid integration result"
+            )
+
+        if (
+            integration_result.get("aspect_ratio")
+            != aspect_ratio
+        ):
+            raise ValueError(
+                "Existing plan aspect ratio mismatch"
             )
 
     production_plan = prepare_production_plan(
@@ -311,26 +485,23 @@ def produce_v28_video(
         bilingual_captions=bilingual_captions,
     )
 
-    requested_duration = _positive_number(
+    requested = _positive_number(
         integration_result.get(
             "requested_duration_seconds"
         ),
         "Requested duration",
     )
 
-    planned_duration = _positive_number(
+    planned = _positive_number(
         production_plan.get(
             "total_output_duration_seconds"
         ),
         "Planned duration",
     )
 
-    if abs(
-        requested_duration - planned_duration
-    ) > 0.001:
+    if abs(requested - planned) > 0.001:
         raise ValueError(
-            "Cinematic duration does not match "
-            "the requested duration"
+            "Planned duration differs from request"
         )
 
     result = produce_video(
@@ -349,12 +520,8 @@ def produce_v28_video(
         "project": "MELODIA AI",
         "version": VERSION,
         "engine": "prompt_mp4_integration",
-        "requested_duration_seconds": (
-            requested_duration
-        ),
-        "planned_duration_seconds": (
-            planned_duration
-        ),
+        "requested_duration_seconds": requested,
+        "planned_duration_seconds": planned,
         "scene_count": len(
             production_plan["scenes"]
         ),
@@ -365,8 +532,7 @@ def produce_v28_video(
 def main():
     parser = argparse.ArgumentParser(
         description=(
-            "MELODIA AI V2.8 Prompt-to-MP4 "
-            "Production Integration"
+            "MELODIA AI V2.8 Prompt-to-MP4 Integration"
         )
     )
 
@@ -381,13 +547,13 @@ def main():
 
     source.add_argument(
         "--input",
-        help="Existing V2.8 cinematic JSON plan",
+        help="Existing V2.8 integration JSON",
     )
 
     parser.add_argument(
         "--output",
         required=True,
-        help="Destination MP4 file",
+        help="Destination MP4",
     )
 
     parser.add_argument(
@@ -440,13 +606,11 @@ def main():
     parser.add_argument(
         "--bilingual-captions",
         default=None,
-        help="Optional JSON translation file",
     )
 
     parser.add_argument(
         "--music",
         default=None,
-        help="Optional instrumental audio file",
     )
 
     parser.add_argument(
