@@ -1,0 +1,355 @@
+
+name: MELODIA V2.8 Cinematic Integration Validation
+
+on:
+  push:
+    paths:
+      - 'melodia_prompt_scene_engine.py'
+      - 'melodia_prompt_cinematic_integration.py'
+      - 'melodia_cinematic_orchestration_engine.py'
+      - '.github/workflows/melodia-v28-cinematic-integration-validation.yml'
+  pull_request:
+    paths:
+      - 'melodia_prompt_scene_engine.py'
+      - 'melodia_prompt_cinematic_integration.py'
+      - 'melodia_cinematic_orchestration_engine.py'
+      - '.github/workflows/melodia-v28-cinematic-integration-validation.yml'
+  workflow_dispatch:
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Verify Python syntax
+        run: |
+          python -m py_compile melodia_prompt_scene_engine.py
+          python -m py_compile melodia_prompt_cinematic_integration.py
+          python -m py_compile melodia_cinematic_orchestration_engine.py
+
+      - name: Run V2.8 cinematic integration tests
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          import math
+          import traceback
+          from pathlib import Path
+
+          from melodia_prompt_cinematic_integration import (
+              generate_cinematic_plan,
+              save_cinematic_plan,
+          )
+
+          checks = []
+          diagnostics = {}
+
+          def check(name, condition):
+              passed = bool(condition)
+              checks.append({
+                  "name": name,
+                  "passed": passed,
+              })
+              print(
+                  ("PASS: " if passed else "FAIL: ") + name,
+                  flush=True,
+              )
+
+          def test(name, operation):
+              try:
+                  operation()
+              except Exception as exc:
+                  check(name, False)
+                  diagnostics[name] = {
+                      "error": str(exc),
+                      "traceback": traceback.format_exc(),
+                  }
+
+          def require(name, condition):
+              check(name, condition)
+
+          def basic_test():
+              prompt = (
+                  "A house in the middle, "
+                  "a tree on the left, "
+                  "and a flower on the right."
+              )
+
+              result = generate_cinematic_plan(
+                  prompt=prompt,
+                  duration_seconds=30,
+                  aspect_ratio="16:9",
+                  scene_seconds=10,
+                  transition_duration=1.0,
+                  seed=1234,
+              )
+
+              plan = result["cinematic_plan"]
+              scenes = plan["scenes"]
+
+              require(
+                  "Landscape resolution",
+                  (result["width"], result["height"])
+                  == (1280, 720),
+              )
+
+              require(
+                  "Three orchestrated scenes",
+                  len(scenes) == 3,
+              )
+
+              require(
+                  "Requested duration recorded",
+                  result["requested_duration_seconds"] == 30,
+              )
+
+              require(
+                  "Scene objects retained",
+                  all(
+                      isinstance(s.get("objects"), list)
+                      and len(s["objects"]) == 3
+                      for s in scenes
+                  ),
+              )
+
+              positions = {
+                  obj["category"]: obj["center"]["x"]
+                  for obj in scenes[0]["objects"]
+              }
+
+              require(
+                  "House centered",
+                  positions.get("house") == 0.50,
+              )
+
+              require(
+                  "Tree on left",
+                  positions.get("tree") == 0.22,
+              )
+
+              require(
+                  "Flower on right",
+                  positions.get("flower") == 0.78,
+              )
+
+              require(
+                  "Continuity identities retained",
+                  all(
+                      obj.get("continuity_id")
+                      for scene in scenes
+                      for obj in scene["objects"]
+                  ),
+              )
+
+              require(
+                  "Normalized object positions",
+                  all(
+                      0 <= obj["center"]["x"] <= 1
+                      and 0 <= obj["center"]["y"] <= 1
+                      for scene in scenes
+                      for obj in scene["objects"]
+                  ),
+              )
+
+              require(
+                  "Cinematic timeline present",
+                  isinstance(plan.get("timeline"), list)
+                  and len(plan["timeline"]) == len(scenes),
+              )
+
+              require(
+                  "Camera plans present",
+                  isinstance(plan.get("camera_plans"), list)
+                  and len(plan["camera_plans"]) > 0,
+              )
+
+              require(
+                  "Transitions present",
+                  isinstance(plan.get("transitions"), list)
+                  and len(plan["transitions"]) == len(scenes) - 1,
+              )
+
+              repeat = generate_cinematic_plan(
+                  prompt=prompt,
+                  duration_seconds=30,
+                  aspect_ratio="16:9",
+                  scene_seconds=10,
+                  transition_duration=1.0,
+                  seed=1234,
+              )
+
+              require(
+                  "Deterministic integration",
+                  result == repeat,
+              )
+
+              output = Path("cinematic_test_plan.json")
+              save_cinematic_plan(result, output)
+
+              require(
+                  "JSON export valid",
+                  json.loads(output.read_text(
+                      encoding="utf-8"
+                  )) == result,
+              )
+
+              diagnostics["landscape"] = {
+                  "requested_duration": 30,
+                  "scene_count": len(scenes),
+                  "timeline": plan.get("timeline"),
+                  "transitions": plan.get("transitions"),
+                  "duration": plan.get("duration"),
+              }
+
+          def portrait_test():
+              result = generate_cinematic_plan(
+                  prompt="A tree on the left.",
+                  duration_seconds=20,
+                  aspect_ratio="9:16",
+                  scene_seconds=10,
+                  seed=5678,
+              )
+
+              require(
+                  "Portrait resolution",
+                  (result["width"], result["height"])
+                  == (720, 1280),
+              )
+
+              require(
+                  "Portrait scene count",
+                  result["scene_count"] == 2,
+              )
+
+          def long_duration_test():
+              result = generate_cinematic_plan(
+                  prompt="A house in the middle.",
+                  duration_seconds=600,
+                  scene_seconds=10,
+                  transition_duration=1.0,
+                  seed=9876,
+              )
+
+              plan = result["cinematic_plan"]
+
+              require(
+                  "Ten minute request accepted",
+                  result["requested_duration_seconds"] == 600,
+              )
+
+              require(
+                  "Sixty cinematic scenes",
+                  result["scene_count"] == 60,
+              )
+
+              diagnostics["ten_minute"] = {
+                  "requested_duration": 600,
+                  "cinematic_duration": plan.get("duration"),
+                  "scene_count": result["scene_count"],
+              }
+
+          def invalid_input_test():
+              cases = [
+                  (
+                      "Reject empty prompt",
+                      {"prompt": ""},
+                  ),
+                  (
+                      "Reject duration above ten minutes",
+                      {
+                          "prompt": "A tree.",
+                          "duration_seconds": 601,
+                      },
+                  ),
+                  (
+                      "Reject unsupported aspect",
+                      {
+                          "prompt": "A tree.",
+                          "aspect_ratio": "4:3",
+                      },
+                  ),
+                  (
+                      "Reject invalid camera intensity",
+                      {
+                          "prompt": "A tree.",
+                          "camera_intensity": 2,
+                      },
+                  ),
+                  (
+                      "Reject invalid transition duration",
+                      {
+                          "prompt": "A tree.",
+                          "transition_duration": 4,
+                      },
+                  ),
+              ]
+
+              for name, kwargs in cases:
+                  try:
+                      generate_cinematic_plan(**kwargs)
+                  except ValueError:
+                      check(name, True)
+                  except Exception as exc:
+                      check(name, False)
+                      diagnostics[name] = str(exc)
+                  else:
+                      check(name, False)
+
+          try:
+              test("Landscape integration execution", basic_test)
+              test("Portrait integration execution", portrait_test)
+              test("Ten minute integration execution", long_duration_test)
+              test("Invalid input execution", invalid_input_test)
+          finally:
+              report = {
+                  "project": "MELODIA AI",
+                  "version": "2.8",
+                  "validation": "cinematic_integration",
+                  "total": len(checks),
+                  "passed": sum(c["passed"] for c in checks),
+                  "failed": sum(not c["passed"] for c in checks),
+                  "checks": checks,
+                  "diagnostics": diagnostics,
+              }
+
+              Path("validation_report.json").write_text(
+                  json.dumps(
+                      report,
+                      indent=2,
+                      ensure_ascii=False,
+                      default=str,
+                  ),
+                  encoding="utf-8",
+              )
+
+              print(
+                  json.dumps({
+                      "total": report["total"],
+                      "passed": report["passed"],
+                      "failed": report["failed"],
+                  }, indent=2),
+                  flush=True,
+              )
+
+          if report["failed"]:
+              raise SystemExit(1)
+          PY
+
+      - name: Upload validation artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: melodia-v28-cinematic-integration-validation
+          path: |
+            validation_report.json
+            cinematic_test_plan.json
+          if-no-files-found: warn
