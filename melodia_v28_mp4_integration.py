@@ -259,14 +259,27 @@ def _convert_scene(scene, learned, seed):
         )
 
     objects = []
+    skipped_categories = []
 
     for obj in source_objects:
+        if not isinstance(obj, dict):
+            raise ValueError("Invalid V2.8 object")
+        category = obj.get("category")
+        if category not in GEOMETRIC_CATEGORIES:
+            skipped_categories.append(str(category))
+            continue
         objects.append(
             _convert_object(
                 obj,
                 learned,
                 seed,
             )
+        )
+
+    if not objects:
+        raise ValueError(
+            "Scene has no drawable objects; unsupported categories: "
+            + ", ".join(sorted(set(skipped_categories)))
         )
 
     objects.sort(
