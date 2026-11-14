@@ -162,7 +162,12 @@ def orchestrate_prompts(
             prompt, learned, seed=seed + index, variation=variation
         )
         if scene.get("status") != "generated":
-            raise ValueError(f"prompt {index} could not generate a depth scene")
+    raise ValueError(
+        f"Prompt {index} failed: "
+        f"status={scene.get('status')}, "
+        f"reason={scene.get('reason', 'not provided')}, "
+        f"prompt={prompt!r}"
+    )
         scene["duration"] = default_duration
         scenes.append(scene)
     result = orchestrate_scenes(
