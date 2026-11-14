@@ -162,8 +162,8 @@ jobs:
 
               require(
                   "Cinematic timeline present",
-                  isinstance(plan.get("timeline"), list)
-                  and len(plan["timeline"]) == len(scenes),
+                  isinstance(plan.get("scene_timeline"), list)
+                  and len(plan["scene_timeline"]) == len(scenes),
               )
 
               require(
@@ -174,8 +174,9 @@ jobs:
 
               require(
                   "Transitions present",
-                  isinstance(plan.get("transitions"), list)
-                  and len(plan["transitions"]) == len(scenes) - 1,
+                  isinstance(plan.get("cinematic_transitions"), list)
+                  and len(plan["cinematic_transitions"])
+                  == len(scenes) - 1,
               )
 
               repeat = generate_cinematic_plan(
@@ -205,9 +206,11 @@ jobs:
               diagnostics["landscape"] = {
                   "requested_duration": 30,
                   "scene_count": len(scenes),
-                  "timeline": plan.get("timeline"),
-                  "transitions": plan.get("transitions"),
-                  "duration": plan.get("duration"),
+                  "timeline": plan.get("scene_timeline"),
+                  "transitions": plan.get("cinematic_transitions"),
+                  "duration": plan.get(
+                      "total_output_duration_seconds"
+                  ),
               }
 
           def portrait_test():
@@ -253,7 +256,9 @@ jobs:
 
               diagnostics["ten_minute"] = {
                   "requested_duration": 600,
-                  "cinematic_duration": plan.get("duration"),
+                  "cinematic_duration": plan.get(
+                      "total_output_duration_seconds"
+                  ),
                   "scene_count": result["scene_count"],
               }
 
