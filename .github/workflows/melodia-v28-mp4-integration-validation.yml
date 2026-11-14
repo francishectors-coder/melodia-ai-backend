@@ -1,3 +1,4 @@
+
 name: MELODIA V2.8 MP4 Integration Validation
 
 on:
@@ -5,6 +6,7 @@ on:
   push:
     paths:
       - "melodia_v28_mp4_integration.py"
+      - "melodia_instrumental_music_engine.py"
       - "melodia_prompt_cinematic_integration.py"
       - "melodia_prompt_scene_engine.py"
       - "melodia_video_production_engine.py"
@@ -65,6 +67,7 @@ jobs:
         run: |
           python -m py_compile \
             melodia_v28_mp4_integration.py \
+            melodia_instrumental_music_engine.py \
             melodia_prompt_cinematic_integration.py \
             melodia_prompt_scene_engine.py \
             melodia_video_production_engine.py \
@@ -86,7 +89,10 @@ jobs:
               "scene_002": "இடதுபுறத்தில் ஒரு வீடு",
           }
           path = Path("validation_output/tamil_captions.json")
-          path.write_text(json.dumps(translations, ensure_ascii=False, indent=2), encoding="utf-8")
+          path.write_text(
+              json.dumps(translations, ensure_ascii=False, indent=2),
+              encoding="utf-8",
+          )
           print(path.read_text(encoding="utf-8"))
           PY
 
@@ -116,24 +122,34 @@ jobs:
           )
           scenes = plan["scenes"]
           assert len(scenes) == 2, f"Expected two scenes, got {len(scenes)}"
+
           english = [scene["captions"]["en"] for scene in scenes]
           tamil = [scene["captions"]["ta"] for scene in scenes]
+
           assert all(english), "English caption missing"
-          assert english[0] != english[1], "English captions do not change between scenes"
+          assert english[0] != english[1], "English captions do not change"
           assert all(tamil), "Tamil caption missing"
-          assert tamil[0] != tamil[1], "Tamil captions do not change between scenes"
+          assert tamil[0] != tamil[1], "Tamil captions do not change"
 
           path = Path("validation_output/bilingual_captions.ass")
-          count = _make_ass(plan, path, 1280, 720, bilingual_language="ta")
+          count = _make_ass(
+              plan, path, 1280, 720, bilingual_language="ta"
+          )
           ass = path.read_text(encoding="utf-8")
-          events = [line for line in ass.splitlines() if line.startswith("Dialogue:")]
-          assert count == 2 and len(events) == 2, f"Expected two ASS events, got {count}"
+          events = [
+              line for line in ass.splitlines()
+              if line.startswith("Dialogue:")
+          ]
+
+          assert count == 2 and len(events) == 2
           for index, event in enumerate(events):
-              assert english[index] in event, f"English absent in event {index + 1}"
-              assert tamil[index] in event, f"Tamil absent in event {index + 1}"
-              assert r"\N" in event, f"Missing bilingual line break in event {index + 1}"
-          assert events[0] != events[1], "ASS events are identical"
-          assert re.search(r"Dialogue: 0,0:00:00\.00,", events[0]), "First caption does not start at zero"
+              assert english[index] in event
+              assert tamil[index] in event
+              assert r"\N" in event
+          assert events[0] != events[1]
+          assert re.search(
+              r"Dialogue: 0,0:00:00\.00,", events[0]
+          )
 
           report = {
               "english_captions": english,
@@ -143,7 +159,8 @@ jobs:
               "passed": True,
           }
           Path("validation_output/caption_validation.json").write_text(
-              json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8"
+              json.dumps(report, ensure_ascii=False, indent=2),
+              encoding="utf-8",
           )
           print(json.dumps(report, ensure_ascii=False, indent=2))
           PY
@@ -156,7 +173,7 @@ jobs:
             -c:a pcm_s16le \
             validation_output/test_audio.wav
 
-      - name: Render landscape bilingual MP4
+      - name: Render landscape bilingual MP4 with automatic music
         run: |
           python melodia_v28_mp4_integration.py \
             --prompt "A peaceful garden with a house, tree and flower" \
@@ -170,7 +187,22 @@ jobs:
             --bilingual-language ta \
             --bilingual-captions validation_output/tamil_captions.json
 
-      - name: Render portrait bilingual MP4 with test audio
+      - name: Render landscape bilingual MP4 without music
+        run: |
+          python melodia_v28_mp4_integration.py \
+            --prompt "A peaceful garden with a house, tree and flower" \
+            --output validation_output/melodia_v28_silent.mp4 \
+            --duration 20 \
+            --aspect 16:9 \
+            --scene-seconds 10 \
+            --transition-duration 1 \
+            --fps 24 \
+            --seed 28 \
+            --bilingual-language ta \
+            --bilingual-captions validation_output/tamil_captions.json \
+            --no-music
+
+      - name: Render portrait bilingual MP4 with supplied audio
         run: |
           python melodia_v28_mp4_integration.py \
             --prompt "A peaceful garden with a house, tree and flower" \
@@ -188,6 +220,7 @@ jobs:
       - name: Validate rendered MP4 files
         run: |
           python - <<'PY'
+          import hashlib
           import json
           import math
           import subprocess
@@ -195,41 +228,134 @@ jobs:
 
           output_dir = Path("validation_output")
           cases = [
-              {"name": "landscape", "file": output_dir / "melodia_v28_landscape.mp4", "width": 1280, "height": 720, "duration": 20.0, "audio": False},
-              {"name": "portrait", "file": output_dir / "melodia_v28_portrait.mp4", "width": 720, "height": 1280, "duration": 20.0, "audio": True},
+              {
+                  "name": "landscape",
+                  "file": output_dir / "melodia_v28_landscape.mp4",
+                  "width": 1280,
+                  "height": 720,
+                  "duration": 20.0,
+                  "audio": True,
+              },
+              {
+                  "name": "silent",
+                  "file": output_dir / "melodia_v28_silent.mp4",
+                  "width": 1280,
+                  "height": 720,
+                  "duration": 20.0,
+                  "audio": False,
+              },
+              {
+                  "name": "portrait",
+                  "file": output_dir / "melodia_v28_portrait.mp4",
+                  "width": 720,
+                  "height": 1280,
+                  "duration": 20.0,
+                  "audio": True,
+              },
           ]
+
           results = []
           failures = []
 
           for case in cases:
               path = case["file"]
+
               if not path.is_file() or path.stat().st_size == 0:
-                  failures.append(f"{case['name']}: MP4 file missing or empty")
+                  failures.append(
+                      f"{case['name']}: MP4 missing or empty"
+                  )
                   continue
 
               probe = subprocess.run(
-                  ["ffprobe", "-v", "error", "-show_entries", "format=duration:stream=index,codec_type,width,height", "-of", "json", str(path)],
-                  capture_output=True, text=True, check=True,
+                  [
+                      "ffprobe", "-v", "error",
+                      "-show_entries",
+                      "format=duration:stream=index,codec_type,width,height",
+                      "-of", "json", str(path),
+                  ],
+                  capture_output=True,
+                  text=True,
+                  check=True,
               )
+
               metadata = json.loads(probe.stdout)
               streams = metadata.get("streams", [])
-              videos = [stream for stream in streams if stream.get("codec_type") == "video"]
-              audios = [stream for stream in streams if stream.get("codec_type") == "audio"]
+              videos = [
+                  stream for stream in streams
+                  if stream.get("codec_type") == "video"
+              ]
+              audios = [
+                  stream for stream in streams
+                  if stream.get("codec_type") == "audio"
+              ]
+
               if not videos:
-                  failures.append(f"{case['name']}: video stream missing")
+                  failures.append(
+                      f"{case['name']}: video stream missing"
+                  )
                   continue
 
               video = videos[0]
               duration = float(metadata["format"]["duration"])
               tolerance = (1.0 / 24.0) + 0.02
+
               if video.get("width") != case["width"]:
-                  failures.append(f"{case['name']}: incorrect width")
+                  failures.append(
+                      f"{case['name']}: incorrect width"
+                  )
               if video.get("height") != case["height"]:
-                  failures.append(f"{case['name']}: incorrect height")
-              if not math.isfinite(duration) or abs(duration - case["duration"]) > tolerance:
-                  failures.append(f"{case['name']}: incorrect duration {duration}")
+                  failures.append(
+                      f"{case['name']}: incorrect height"
+                  )
+              if (
+                  not math.isfinite(duration)
+                  or abs(duration - case["duration"]) > tolerance
+              ):
+                  failures.append(
+                      f"{case['name']}: incorrect duration {duration}"
+                  )
               if bool(audios) != case["audio"]:
-                  failures.append(f"{case['name']}: unexpected audio state")
+                  failures.append(
+                      f"{case['name']}: unexpected audio state"
+                  )
+
+              # Compare frames well inside each static scene.
+              def frame_digest(seconds):
+                  frame = subprocess.run(
+                      [
+                          "ffmpeg",
+                          "-hide_banner",
+                          "-loglevel", "error",
+                          "-ss", str(seconds),
+                          "-i", str(path),
+                          "-frames:v", "1",
+                          "-f", "rawvideo",
+                          "-pix_fmt", "rgb24",
+                          "-",
+                      ],
+                      capture_output=True,
+                      check=True,
+                  ).stdout
+
+                  if not frame:
+                      raise ValueError(
+                          f"No frame at {seconds}s"
+                      )
+                  return hashlib.sha256(frame).hexdigest()
+
+              for scene_label, timestamps in (
+                  ("first", (2, 5, 8)),
+                  ("second", (12, 15, 18)),
+              ):
+                  digests = [
+                      frame_digest(t)
+                      for t in timestamps
+                  ]
+                  if len(set(digests)) != 1:
+                      failures.append(
+                          f"{case['name']}: "
+                          f"{scene_label} scene is not static"
+                      )
 
               results.append({
                   "name": case["name"],
@@ -245,18 +371,41 @@ jobs:
           report = {
               "project": "MELODIA AI",
               "version": "2.8",
-              "validation": "Bilingual MP4 integration",
+              "validation": (
+                  "Bilingual MP4, music modes and static scenes"
+              ),
               "cases": results,
               "failures": failures,
-              "passed": not failures and len(results) == len(cases),
+              "passed": (
+                  not failures
+                  and len(results) == len(cases)
+              ),
           }
+
           (output_dir / "validation_report.json").write_text(
-              json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8"
+              json.dumps(
+                  report,
+                  ensure_ascii=False,
+                  indent=2,
+              ),
+              encoding="utf-8",
           )
-          print(json.dumps(report, ensure_ascii=False, indent=2))
+
+          print(json.dumps(
+              report,
+              ensure_ascii=False,
+              indent=2,
+          ))
+
           if not report["passed"]:
-              raise SystemExit("MELODIA V2.8 MP4 validation failed")
-          print("MELODIA V2.8 BILINGUAL MP4 VALIDATION PASSED")
+              raise SystemExit(
+                  "MELODIA V2.8 MP4 validation failed"
+              )
+
+          print(
+              "MELODIA V2.8 MP4, MUSIC AND "
+              "STATIC SCENE VALIDATION PASSED"
+          )
           PY
 
       - name: Upload validation artifacts
