@@ -2,6 +2,7 @@
 # MELODIA AI - WEB SERVER
 # Step 1336.70 - Free test bypass for prompt analysis
 # Default and Advanced Mode Support
+# V2.8 safe routing: supported new jobs use the V2.8 adapter; legacy jobs preserved.
 
 import json
 import math
@@ -19,6 +20,7 @@ from flask import (
     send_from_directory
 )
 
+from melodia_v28_web_job_adapter import process_v28_job
 from melodia_prompt_analyzer import analyze_prompt
 from melodia_job_manager import create_video_job
 from melodia_video_worker import (
@@ -188,7 +190,10 @@ def background_worker():
                     job.get("job_id")
                 )
 
-                process_job(job_file, job)
+                if job.get("engine") == "v2.8":
+                    process_v28_job(job_file, job)
+                else:
+                    process_job(job_file, job)
 
             else:
                 worker_stop.wait(3)
@@ -469,9 +474,22 @@ def generate():
             "error": str(error)
         }), 400
 
-    # Create a job using the existing
-    # working job manager.
-    job = create_video_job(settings)
+    # Preserve legacy jobs, including quota recovery and bilingual jobs.
+    # V2.8 currently requires English primary captions and supplied
+    # translations for bilingual mode; do not silently drop translations.
+    # The [FREE TEST] path remains on the legacy worker as before.
+    use_v28 = (
+        settings.get("language") == "English"
+        and settings.get("captions") in ("single", "none")
+        and "[FREE TEST]" not in settings.get("prompt", "").upper()
+    )
+
+    # Store the engine before starting the background worker, so queued
+    # jobs have an unambiguous route even after server restarts.
+    with job_lock:
+        job = create_video_job(settings)
+        job["engine"] = "v2.8" if use_v28 else "legacy"
+        save_job(job)
 
     start_background_worker()
 
@@ -479,6 +497,7 @@ def generate():
         "success": True,
         "job_id": job["job_id"],
         "status": job["status"],
+        "engine": job["engine"],
         "generation_started": True,
         "mode": recommendation["mode"],
         "recommendation": recommendation,
