@@ -1,0 +1,183 @@
+
+name: MELODIA V2.7 AI Image Rendering Validation
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'melodia_ai_image_video_renderer.py'
+      - '.github/workflows/melodia-v27-ai-image-rendering-validation.yml'
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y ffmpeg
+          python -m pip install --upgrade pip
+          python -m pip install pillow
+
+      - name: Check Python syntax
+        run: python -m py_compile melodia_ai_image_video_renderer.py
+
+      - name: Create test images and orchestration plan
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          from PIL import Image, ImageDraw
+
+          out = Path('v27_validation')
+          out.mkdir(exist_ok=True)
+          images = []
+
+          for index in range(2):
+              im = Image.new('RGB', (1280, 720), (55 + index * 45, 110, 155))
+              draw = ImageDraw.Draw(im)
+              for y in range(720):
+                  draw.line(
+                      (0, y, 1279, y),
+                      fill=(
+                          min(255, 35 + y // 6 + index * 30),
+                          min(255, 95 + y // 9),
+                          min(255, 155 + y // 12)
+                      )
+                  )
+              draw.ellipse(
+                  (780 - index * 280, 80, 1040 - index * 280, 340),
+                  fill=(255, 220, 130)
+              )
+              draw.polygon(
+                  [(0, 570), (330, 270), (630, 570)],
+                  fill=(35, 75, 85)
+              )
+              draw.polygon(
+                  [(350, 610), (880, 300), (1279, 610)],
+                  fill=(40, 90, 75)
+              )
+              path = out / f'scene_{index + 1}.png'
+              im.save(path)
+              images.append(str(path))
+
+          plan = {
+              'version': '2.3',
+              'scenes': [
+                  {'status': 'generated'}
+                  for _ in range(2)
+              ],
+              'camera_plans': [
+                  {
+                      'keyframes': [
+                          {'x': 0.45, 'y': 0.5, 'zoom': 1.05},
+                          {'x': 0.55, 'y': 0.5, 'zoom': 1.15}
+                      ]
+                  },
+                  {
+                      'keyframes': [
+                          {'x': 0.55, 'y': 0.5, 'zoom': 1.15},
+                          {'x': 0.45, 'y': 0.5, 'zoom': 1.05}
+                      ]
+                  }
+              ],
+              'cinematic_transitions': [
+                  {
+                      'from_scene': 0,
+                      'to_scene': 1,
+                      'duration_seconds': 0.5,
+                      'transition': 'crossfade'
+                  }
+              ],
+              'scene_timeline': [
+                  {'duration_seconds': 2.0},
+                  {'duration_seconds': 2.0}
+              ],
+              'total_output_duration_seconds': 3.5
+          }
+
+          (out / 'plan.json').write_text(
+              json.dumps(plan), encoding='utf-8'
+          )
+          (out / 'images.json').write_text(
+              json.dumps(images), encoding='utf-8'
+          )
+          PY
+
+      - name: Render landscape and portrait MP4 files
+        run: |
+          python melodia_ai_image_video_renderer.py --plan v27_validation/plan.json --images-json v27_validation/images.json --output v27_validation/landscape.mp4 --width 1280 --height 720 --fps 24
+          python melodia_ai_image_video_renderer.py --plan v27_validation/plan.json --images-json v27_validation/images.json --output v27_validation/portrait.mp4 --width 720 --height 1280 --fps 24
+
+      - name: Verify MP4 metadata and decode
+        run: |
+          python - <<'PY'
+          import json
+          import subprocess
+          from pathlib import Path
+
+          for name, width, height in [
+              ('landscape', 1280, 720),
+              ('portrait', 720, 1280)
+          ]:
+              path = Path('v27_validation') / (name + '.mp4')
+
+              result = subprocess.run(
+                  [
+                      'ffprobe', '-v', 'error',
+                      '-show_streams', '-show_format',
+                      '-of', 'json', str(path)
+                  ],
+                  check=True,
+                  capture_output=True,
+                  text=True
+              )
+
+              data = json.loads(result.stdout)
+              video = next(
+                  s for s in data['streams']
+                  if s['codec_type'] == 'video'
+              )
+              duration = float(data['format']['duration'])
+
+              assert video['codec_name'] == 'h264', video
+              assert (video['width'], video['height']) == (
+                  width, height
+              ), video
+              assert abs(duration - 3.5) <= 0.15, duration
+
+              subprocess.run(
+                  [
+                      'ffmpeg', '-v', 'error',
+                      '-i', str(path),
+                      '-f', 'null', '-'
+                  ],
+                  check=True
+              )
+
+              print(
+                  f'{name}: {width}x{height}, '
+                  f'H.264, {duration:.3f}s, decode passed'
+              )
+          PY
+
+      - name: Upload validation videos
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: melodia-v27-render-validation
+          path: |
+            v27_validation/*.mp4
+            v27_validation/plan.json
+            v27_validation/images.json
+          if-no-files-found: warn
