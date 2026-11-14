@@ -7,12 +7,16 @@ Connects:
 - V2.8 automatic prompt-to-scene generation
 - V2.3 cinematic orchestration
 
-Produces a deterministic cinematic JSON plan.
-
-Python 3.11+
-Standard library for this integration module.
+Features:
+- Deterministic cinematic planning
+- Exact requested output duration
+- Automatic transition-overlap compensation
+- Landscape and portrait support
+- Scene continuity validation
 
 Existing MELODIA AI engines remain unchanged.
+
+Python 3.11+
 """
 
 from __future__ import annotations
@@ -31,10 +35,19 @@ from melodia_cinematic_orchestration_engine import (
 )
 
 VERSION = "2.8"
+DURATION_TOLERANCE = 0.001
+
+
+def _valid_number(value):
+    return (
+        not isinstance(value, bool)
+        and isinstance(value, (int, float))
+        and math.isfinite(value)
+    )
 
 
 def _validate_plan(plan):
-    """Check essential integration output."""
+    """Validate the generated cinematic plan."""
 
     if not isinstance(plan, dict):
         raise ValueError(
@@ -49,6 +62,7 @@ def _validate_plan(plan):
         )
 
     for index, scene in enumerate(scenes):
+
         if not isinstance(scene, dict):
             raise ValueError(
                 f"Scene {index + 1} is invalid"
@@ -64,9 +78,7 @@ def _validate_plan(plan):
         duration = scene.get("duration")
 
         if (
-            isinstance(duration, bool)
-            or not isinstance(duration, (int, float))
-            or not math.isfinite(duration)
+            not _valid_number(duration)
             or duration <= 0
         ):
             raise ValueError(
@@ -76,6 +88,7 @@ def _validate_plan(plan):
         identities = set()
 
         for obj in objects:
+
             if not isinstance(obj, dict):
                 raise ValueError(
                     "Invalid scene object"
@@ -83,7 +96,10 @@ def _validate_plan(plan):
 
             identity = obj.get("continuity_id")
 
-            if not isinstance(identity, str) or not identity:
+            if (
+                not isinstance(identity, str)
+                or not identity
+            ):
                 raise ValueError(
                     "Missing continuity identity"
                 )
@@ -95,7 +111,7 @@ def _validate_plan(plan):
 
             identities.add(identity)
 
-            center = obj.get("center", {})
+            center = obj.get("center")
 
             if not isinstance(center, dict):
                 raise ValueError(
@@ -103,12 +119,11 @@ def _validate_plan(plan):
                 )
 
             for axis in ("x", "y"):
+
                 value = center.get(axis)
 
                 if (
-                    isinstance(value, bool)
-                    or not isinstance(value, (int, float))
-                    or not math.isfinite(value)
+                    not _valid_number(value)
                     or not 0 <= value <= 1
                 ):
                     raise ValueError(
@@ -116,6 +131,71 @@ def _validate_plan(plan):
                     )
 
     return True
+
+
+def _compensate_scene_durations(
+    scenes,
+    requested_duration,
+    transition_duration,
+):
+    """
+    Compensate for overlapping scene transitions.
+
+    The V2.3 engine uses overlapping transitions.
+    The total scene duration must therefore include
+    the overlap that will be removed during assembly.
+    """
+
+    scene_count = len(scenes)
+
+    if scene_count == 0:
+        raise ValueError(
+            "Cannot compensate an empty scene list"
+        )
+
+    if (
+        not _valid_number(requested_duration)
+        or requested_duration <= 0
+    ):
+        raise ValueError(
+            "Requested duration must be positive"
+        )
+
+    overlap_count = max(0, scene_count - 1)
+
+    total_overlap = (
+        overlap_count * transition_duration
+    )
+
+    adjusted_total = (
+        requested_duration + total_overlap
+    )
+
+    original_total = sum(
+        float(scene["duration"])
+        for scene in scenes
+    )
+
+    if original_total <= 0:
+        raise ValueError(
+            "Original scene duration is invalid"
+        )
+
+    scale = adjusted_total / original_total
+
+    compensated = []
+
+    for scene in scenes:
+
+        updated_scene = dict(scene)
+
+        updated_scene["duration"] = (
+            float(scene["duration"]) * scale
+        )
+
+        compensated.append(updated_scene)
+
+    return compensated
 
 
 def generate_cinematic_plan(
@@ -128,12 +208,11 @@ def generate_cinematic_plan(
     seed=None,
 ):
     """
-    Generate and orchestrate scenes from one prompt.
+    Generate a deterministic cinematic plan.
 
-    Note:
-    The final cinematic timeline can be shorter than
-    the sum of scene durations because transitions
-    may overlap adjacent scenes.
+    Transition overlap is compensated so the
+    resulting cinematic timeline matches the
+    requested playback duration.
     """
 
     scene_plan = generate_prompt_scenes(
@@ -146,15 +225,16 @@ def generate_cinematic_plan(
     if seed is None:
         seed = scene_plan["seed"]
 
-    if isinstance(seed, bool) or not isinstance(seed, int):
+    if (
+        isinstance(seed, bool)
+        or not isinstance(seed, int)
+    ):
         raise ValueError(
             "Seed must be an integer"
         )
 
     if (
-        isinstance(camera_intensity, bool)
-        or not isinstance(camera_intensity, (int, float))
-        or not math.isfinite(camera_intensity)
+        not _valid_number(camera_intensity)
         or not 0 <= camera_intensity <= 1
     ):
         raise ValueError(
@@ -162,19 +242,29 @@ def generate_cinematic_plan(
         )
 
     if (
-        isinstance(transition_duration, bool)
-        or not isinstance(transition_duration, (int, float))
-        or not math.isfinite(transition_duration)
+        not _valid_number(transition_duration)
         or not 0 <= transition_duration <= 3
     ):
         raise ValueError(
             "Transition duration must be between 0 and 3"
         )
 
+    requested_duration = float(
+        scene_plan["duration_seconds"]
+    )
+
     source_scenes = scene_plan["scenes"]
 
+    compensated_scenes = (
+        _compensate_scene_durations(
+            source_scenes,
+            requested_duration,
+            transition_duration,
+        )
+    )
+
     cinematic = orchestrate_scenes(
-        source_scenes,
+        compensated_scenes,
         seed=seed,
         default_duration=scene_seconds,
         camera_intensity=camera_intensity,
@@ -182,6 +272,27 @@ def generate_cinematic_plan(
     )
 
     _validate_plan(cinematic)
+
+    actual_duration = cinematic.get(
+        "total_output_duration_seconds"
+    )
+
+    if not _valid_number(actual_duration):
+        raise ValueError(
+            "Cinematic output duration is missing"
+        )
+
+    duration_error = (
+        float(actual_duration)
+        - requested_duration
+    )
+
+    if abs(duration_error) > DURATION_TOLERANCE:
+        raise ValueError(
+            "Cinematic duration mismatch: "
+            f"requested={requested_duration}, "
+            f"actual={actual_duration}"
+        )
 
     result = {
         "project": "MELODIA AI",
@@ -193,8 +304,15 @@ def generate_cinematic_plan(
         "width": scene_plan["width"],
         "height": scene_plan["height"],
         "requested_duration_seconds": (
-            scene_plan["duration_seconds"]
+            requested_duration
         ),
+        "actual_duration_seconds": (
+            float(actual_duration)
+        ),
+        "duration_error_seconds": (
+            duration_error
+        ),
+        "transition_overlap_compensated": True,
         "scene_count": len(cinematic["scenes"]),
         "cinematic_plan": cinematic,
     }
@@ -203,7 +321,7 @@ def generate_cinematic_plan(
 
 
 def save_cinematic_plan(plan, output):
-    """Write cinematic plan to JSON."""
+    """Save the complete cinematic plan as JSON."""
 
     destination = Path(output)
 
@@ -225,23 +343,22 @@ def save_cinematic_plan(plan, output):
 
 
 def main():
+
     parser = argparse.ArgumentParser(
         description=(
-            "MELODIA AI V2.8 Prompt-to-Cinematic "
-            "Integration"
+            "MELODIA AI V2.8 "
+            "Exact-Duration Cinematic Integration"
         )
     )
 
     parser.add_argument(
         "--prompt",
         required=True,
-        help="Natural-language video prompt",
     )
 
     parser.add_argument(
         "--output",
         required=True,
-        help="Destination JSON file",
     )
 
     parser.add_argument(
@@ -297,13 +414,29 @@ def main():
         args.output,
     )
 
-    print("MELODIA AI V2.8 CINEMATIC INTEGRATION")
+    print(
+        "MELODIA AI V2.8 "
+        "EXACT-DURATION CINEMATIC INTEGRATION"
+    )
+
     print("Status: Plan generated")
     print("Scenes:", result["scene_count"])
+
     print(
         "Requested duration:",
         result["requested_duration_seconds"],
     )
+
+    print(
+        "Actual duration:",
+        result["actual_duration_seconds"],
+    )
+
+    print(
+        "Duration error:",
+        result["duration_error_seconds"],
+    )
+
     print("Aspect:", result["aspect_ratio"])
     print("Output:", destination)
 
