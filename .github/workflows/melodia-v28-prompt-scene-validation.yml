@@ -1,0 +1,192 @@
+
+name: MELODIA V2.8 Prompt Scene Validation
+
+on:
+  push:
+    paths:
+      - 'melodia_prompt_scene_engine.py'
+      - '.github/workflows/melodia-v28-prompt-scene-validation.yml'
+  pull_request:
+    paths:
+      - 'melodia_prompt_scene_engine.py'
+      - '.github/workflows/melodia-v28-prompt-scene-validation.yml'
+  workflow_dispatch:
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Validate syntax
+        run: python -m py_compile melodia_prompt_scene_engine.py
+
+      - name: Test prompt scene generation
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          import math
+          from pathlib import Path
+          from melodia_prompt_scene_engine import generate_prompt_scenes
+
+          checks = []
+
+          def check(name, condition):
+              checks.append({'name': name, 'passed': bool(condition)})
+              print(('PASS' if condition else 'FAIL') + ': ' + name)
+
+          prompt = 'A house in the middle, a tree on the left, and a flower on the right.'
+          result = generate_prompt_scenes(
+              prompt, duration_seconds=30, scene_seconds=10
+          )
+
+          check('Three scenes', result['scene_count'] == 3)
+          check(
+              'Duration is 30 seconds',
+              math.isclose(
+                  sum(s['duration'] for s in result['scenes']),
+                  30, abs_tol=1e-5
+              )
+          )
+
+          first = result['scenes'][0]['objects']
+          positions = {
+              obj['category']: obj['center']['x']
+              for obj in first
+          }
+
+          check('House in center', positions.get('house') == 0.50)
+          check('Tree on left', positions.get('tree') == 0.22)
+          check('Flower on right', positions.get('flower') == 0.78)
+
+          check(
+              'Stable identities',
+              all(
+                  [o['continuity_id'] for o in scene['objects']]
+                  == [o['continuity_id'] for o in first]
+                  for scene in result['scenes']
+              )
+          )
+
+          check(
+              'Object coordinates normalized',
+              all(
+                  0 <= o['center']['x'] <= 1
+                  and 0 <= o['center']['y'] <= 1
+                  for s in result['scenes']
+                  for o in s['objects']
+              )
+          )
+
+          check(
+              'Landscape resolution',
+              (result['width'], result['height']) == (1280, 720)
+          )
+
+          portrait = generate_prompt_scenes(
+              'A tree on the left.',
+              duration_seconds=20,
+              aspect_ratio='9:16'
+          )
+
+          check(
+              'Portrait resolution',
+              (portrait['width'], portrait['height']) == (720, 1280)
+          )
+
+          long_result = generate_prompt_scenes(
+              'A house in the middle.',
+              duration_seconds=600
+          )
+
+          check(
+              'Ten minute duration',
+              math.isclose(
+                  sum(s['duration'] for s in long_result['scenes']),
+                  600, abs_tol=1e-4
+              )
+          )
+
+          check(
+              'Ten minute scene count',
+              long_result['scene_count'] == 60
+          )
+
+          check(
+              'Deterministic output',
+              result == generate_prompt_scenes(
+                  prompt, duration_seconds=30, scene_seconds=10
+              )
+          )
+
+          check(
+              'V2.3 scene fields',
+              all(
+                  isinstance(s['duration'], (int, float))
+                  and isinstance(s['objects'], list)
+                  for s in result['scenes']
+              )
+          )
+
+          invalid_cases = [
+              ('Reject blank prompt', {'prompt': ' '}),
+              ('Reject over 600 seconds', {
+                  'prompt': 'tree',
+                  'duration_seconds': 601
+              }),
+              ('Reject zero duration', {
+                  'prompt': 'tree',
+                  'duration_seconds': 0
+              }),
+              ('Reject unsupported aspect', {
+                  'prompt': 'tree',
+                  'aspect_ratio': '4:3'
+              }),
+          ]
+
+          for name, kwargs in invalid_cases:
+              try:
+                  generate_prompt_scenes(**kwargs)
+              except ValueError:
+                  check(name, True)
+              else:
+                  check(name, False)
+
+          report = {
+              'version': '2.8',
+              'total': len(checks),
+              'passed': sum(c['passed'] for c in checks),
+              'failed': sum(not c['passed'] for c in checks),
+              'checks': checks
+          }
+
+          Path('validation_report.json').write_text(
+              json.dumps(report, indent=2),
+              encoding='utf-8'
+          )
+
+          print(json.dumps({
+              k: report[k]
+              for k in ('total', 'passed', 'failed')
+          }, indent=2))
+
+          if report['failed']:
+              raise SystemExit(1)
+          PY
+
+      - name: Upload validation report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: melodia-v28-prompt-scene-validation
+          path: validation_report.json
+          if-no-files-found: warn
