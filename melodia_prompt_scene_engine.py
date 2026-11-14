@@ -1,4 +1,3 @@
-
 """
 MELODIA AI V2.8
 Automatic Prompt-to-Scene Generation Engine
@@ -308,10 +307,52 @@ def _scene_segments(prompt):
     return segments or [prompt.strip()]
 
 
+
+def _caption_for_scene(description, objects, scene_index, scene_count):
+    """Create a distinct, factual English caption for each scene.
+
+    Visual descriptions remain unchanged. Repeated prompt segments
+    rotate through recognized objects rather than repeating the
+    complete prompt as an on-screen caption.
+    """
+    description = " ".join(description.strip().split())
+    if scene_count == 1 or scene_index == 0:
+        return description
+
+    categories = []
+    for obj in objects:
+        category = obj["category"]
+        if category != "abstract" and category not in categories:
+            categories.append(category)
+
+    if not categories:
+        return f"{description} — scene {scene_index + 1}"
+
+    focus = categories[(scene_index - 1) % len(categories)]
+    position = next(
+        (obj["position"] for obj in objects if obj["category"] == focus),
+        "center",
+    )
+    position_phrase = {
+        "left": "on the left",
+        "right": "on the right",
+        "center": "in the center",
+    }[position]
+
+    # The focus and its position come from the planned geometry;
+    # no new objects, actions, or translations are invented.
+    caption = f"The {focus} {position_phrase}"
+    if scene_index > len(categories):
+        caption += f" — scene {scene_index + 1}"
+    return caption
+
+
 def _build_scene(
     description,
     scene_index,
     duration,
+    scene_count=1,
+    unique_description=False,
 ):
     text = _normalize(description)
 
@@ -340,11 +381,24 @@ def _build_scene(
             "depth": item["depth"],
         })
 
+    caption = (
+        " ".join(description.strip().split())
+        if unique_description
+        else _caption_for_scene(
+            description,
+            extracted,
+            scene_index,
+            scene_count,
+        )
+    )
+
     return {
         "scene_id": f"scene_{scene_index + 1:03d}",
         "description": description,
         "duration": duration,
         "objects": objects,
+        "caption_en": caption,
+        "captions": {"en": caption},
     }
 
 
@@ -430,6 +484,8 @@ def generate_prompt_scenes(
                 description,
                 index,
                 duration,
+                scene_count,
+                index < len(segments),
             )
         )
 
