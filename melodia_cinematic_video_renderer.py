@@ -1,8 +1,8 @@
 """MELODIA AI V2.4 — render V2.3 geometric orchestration plans to MP4.
 
-Requires FFmpeg and CairoSVG. Camera continuity correction for V2.8:
-shared scene objects retain the preceding camera endpoint across transitions.
-Earlier planner and production engines remain unchanged.
+Requires FFmpeg and CairoSVG. V2.8 reading-focused mode:
+backgrounds remain static throughout each scene; existing scene transitions,
+timing, captions and audio integration remain unchanged.
 """
 from __future__ import annotations
 
@@ -56,7 +56,7 @@ def _camera_endpoints(scenes, cameras):
 
 
 def render_video(plan, output, *, width=1280, height=720, fps=30, ffmpeg="ffmpeg"):
-    """Render a V2.3 plan to silent H.264 MP4 with continuous camera transforms."""
+    """Render a V2.3 plan to silent H.264 MP4 with static scene backgrounds."""
     if not isinstance(plan, dict) or plan.get("version") != "2.3":
         raise ValueError("Expected a V2.3 orchestration plan")
     scenes = plan.get("scenes")
@@ -95,7 +95,8 @@ def render_video(plan, output, *, width=1280, height=720, fps=30, ffmpeg="ffmpeg
     if abs(expected - float(plan["total_output_duration_seconds"])) > 0.0001:
         raise ValueError("Plan output duration mismatch")
 
-    endpoints = _camera_endpoints(scenes, cameras)
+    # Preserve camera-plan validation, but do not animate camera keyframes.
+    _camera_endpoints(scenes, cameras)
     output = Path(output)
     output.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="melodia_v24_") as directory:
@@ -110,20 +111,13 @@ def render_video(plan, output, *, width=1280, height=720, fps=30, ffmpeg="ffmpeg
             inputs += ["-loop", "1", "-framerate", str(fps), "-t", str(durations[i]), "-i", str(png)]
 
         filters = []
-        for i, (start, end) in enumerate(endpoints):
-            frames = max(1, round(durations[i] * fps))
-            # Smoothstep interpolation makes camera velocity zero at scene ends.
-            p = f"min(1,max(0,on/{max(1, frames - 1)}))"
-            ease = f"({p}*{p}*(3-2*{p}))"
-            z = f'({float(start["zoom"]):.8f}+({float(end["zoom"])-float(start["zoom"]):.8f})*{ease})'
-            x = f'({float(start["x"]):.8f}+({float(end["x"])-float(start["x"]):.8f})*{ease})'
-            y = f'({float(start["y"]):.8f}+({float(end["y"])-float(start["y"]):.8f})*{ease})'
+        # Each PNG is held at its original framing for the entire scene.
+        # No zoompan, crop interpolation, or camera reset is applied.
+        # Keep the original trim, timestamps, and downstream transitions.
+        for i in range(n):
             filters.append(
-                f"[{i}:v]zoompan=z='{z}':"
-                f"x='max(0,min(iw-iw/zoom,iw*{x}-iw/(2*zoom)))':"
-                f"y='max(0,min(ih-ih/zoom,ih*{y}-ih/(2*zoom)))':"
-                f"d=1:s={width}x{height}:fps={fps},"
-                f"trim=duration={durations[i]:.6f},setpts=PTS-STARTPTS,format=yuv420p[v{i}]"
+                f"[{i}:v]trim=duration={durations[i]:.6f},"
+                f"setpts=PTS-STARTPTS,format=yuv420p[v{i}]"
             )
         previous = "v0"
         elapsed = durations[0]
