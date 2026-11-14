@@ -15,12 +15,14 @@ import argparse
 import copy
 import json
 import math
+import tempfile
 from pathlib import Path
 
 from melodia_prompt_cinematic_integration import (
     generate_cinematic_plan,
 )
 from melodia_video_production_engine import produce_video
+from melodia_instrumental_music_engine import generate_instrumental
 
 from melodia_geometric_object_learner import EXAMPLES
 from melodia_automatic_structure_learner import learn_all
@@ -433,6 +435,7 @@ def produce_v28_video(
     bilingual_language=None,
     bilingual_captions=None,
     music=None,
+    auto_music=True,
     music_volume=0.22,
     captions=True,
     ffmpeg="ffmpeg",
@@ -504,16 +507,49 @@ def produce_v28_video(
             "Planned duration differs from request"
         )
 
-    result = produce_video(
-        production_plan,
-        output,
-        aspect=aspect_ratio,
-        fps=fps,
-        bilingual_language=bilingual_language,
-        music=music,
-        music_volume=music_volume,
-        captions=captions,
-        ffmpeg=ffmpeg,
+    if not isinstance(auto_music, bool):
+        raise ValueError("auto_music must be boolean")
+    if music is not None and not isinstance(music, (str, Path)):
+        raise ValueError("music must be a file path or None")
+    if music is not None and not Path(music).is_file():
+        raise FileNotFoundError(f"Music file not found: {music}")
+
+    # The V2.5 engine already supports music files. Generate a temporary
+    # soundtrack only when automatic music is enabled and no file was given.
+    # Its lifetime covers the entire MP4 production call.
+    with tempfile.TemporaryDirectory(prefix="melodia_v28_music_") as music_dir:
+        selected_music = music
+        music_metadata = None
+        if selected_music is None and auto_music:
+            soundtrack_prompt = prompt
+            if soundtrack_prompt is None:
+                soundtrack_prompt = integration_result.get("prompt")
+            if not isinstance(soundtrack_prompt, str) or not soundtrack_prompt.strip():
+                soundtrack_prompt = " ".join(
+                    str(scene.get("description", ""))
+                    for scene in production_plan["scenes"]
+                )
+            selected_music = str(Path(music_dir) / "instrumental.wav")
+            music_metadata = generate_instrumental(
+                soundtrack_prompt,
+                selected_music,
+                duration_seconds=requested,
+            )
+
+        result = produce_video(
+            production_plan,
+            output,
+            aspect=aspect_ratio,
+            fps=fps,
+            bilingual_language=bilingual_language,
+            music=selected_music,
+            music_volume=music_volume,
+            captions=captions,
+            ffmpeg=ffmpeg,
+        )
+
+    music_mode = "provided" if music is not None else (
+        "automatic" if auto_music else "disabled"
     )
 
     return {
@@ -524,6 +560,11 @@ def produce_v28_video(
         "planned_duration_seconds": planned,
         "scene_count": len(
             production_plan["scenes"]
+        ),
+        "music_mode": music_mode,
+        "generated_music": (
+            {key: value for key, value in music_metadata.items() if key != "output"}
+            if music_metadata is not None else None
         ),
         "production": result,
     }
@@ -614,6 +655,12 @@ def main():
     )
 
     parser.add_argument(
+        "--no-music",
+        action="store_true",
+        help="Disable automatic music (unless --music supplies a file)",
+    )
+
+    parser.add_argument(
         "--music-volume",
         type=float,
         default=0.22,
@@ -654,6 +701,7 @@ def main():
         bilingual_language=args.bilingual_language,
         bilingual_captions=args.bilingual_captions,
         music=args.music,
+        auto_music=not args.no_music,
         music_volume=args.music_volume,
         captions=not args.no_captions,
         ffmpeg=args.ffmpeg,
