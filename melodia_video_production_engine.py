@@ -77,10 +77,13 @@ def _make_ass(plan, path, width, height, bilingual_language=None):
     if len(scenes) != len(timeline):
         raise ValueError("Scene and timeline lengths differ")
 
-    font_size = 32 if width > height else 27
+    portrait = height > width
+    font_size = 42 if portrait else 32
+    margin_v = 285 if portrait else 110
+    margin_h = 42 if portrait else 35
 
-    # Noto Sans Tamil supports Tamil and Latin text.
-    # MarginV=110 keeps captions above the bottom edge.
+    # Portrait captions sit above the green ground, with room for two lines.
+    # Landscape caption styling remains unchanged.
     lines = [
         "[Script Info]",
         "ScriptType: v4.00+",
@@ -100,7 +103,7 @@ def _make_ass(plan, path, width, height, bilingual_language=None):
         (
             f"Style: Default,Noto Sans Tamil,{font_size},"
             "&H00FFFFFF,&H00FFFFFF,&H00000000,&H80000000,"
-            "-1,0,0,0,100,100,0,0,1,2,1,2,35,35,110,1"
+            f"-1,0,0,0,100,100,0,0,1,2,1,2,{margin_h},{margin_h},{margin_v},1"
         ),
         "",
         "[Events]",
