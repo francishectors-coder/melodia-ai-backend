@@ -61,9 +61,13 @@ jobs:
 
           output_dir = Path("validation_output")
 
+          # Use objects supported by the V1.1 learner.
+          # Spatial relationships are supported by V1.7.
+          # Sunset and night themes are supported by V1.8.
+
           prompts = [
-              "A red circle above a blue rectangle",
-              "A yellow triangle beside a green circle",
+              "A tree to the left of a house and a flower to the right of the house at sunset",
+              "A house beside a tree and a flower near the tree at night",
           ]
 
           print("Starting real V2.3 orchestration")
@@ -76,6 +80,11 @@ jobs:
           )
 
           print("Orchestration completed")
+          print("Scene count:", plan["scene_count"])
+          print(
+              "Expected output duration:",
+              plan["total_output_duration_seconds"],
+          )
 
           print("Starting real V2.4 and V2.5 rendering")
 
@@ -104,11 +113,12 @@ jobs:
                   result,
                   indent=2,
                   ensure_ascii=False,
+                  default=str,
               ),
               encoding="utf-8",
           )
 
-          print(json.dumps(result, indent=2))
+          print(json.dumps(result, indent=2, default=str))
           PY
 
       - name: Verify generated MP4
