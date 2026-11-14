@@ -396,6 +396,65 @@ def fit_composition(scene):
     return result
 
 
+
+
+def separate_horizontal_overlaps(scene, gap=0.025):
+    """Separate ground-based objects using their actual component bounds.
+
+    Only adjusts horizontally arranged ground objects. Objects participating
+    in above/below relationships are excluded so vertical arrangements stay
+    intact. Every translated component and its object center move together.
+    """
+    result = copy.deepcopy(scene)
+    protected = vertical_object_ids(result)
+    candidates = [
+        (index, obj)
+        for index, obj in enumerate(result["objects"])
+        if obj.get("category") in GROUND_CATEGORIES
+        and obj.get("id") not in protected
+    ]
+    if len(candidates) < 2:
+        return result
+
+    candidates.sort(key=lambda entry: (object_bounds(entry[1])[0], entry[0]))
+    widths = [object_bounds(obj)[2] - object_bounds(obj)[0] for _, obj in candidates]
+    available = 1.0 - 2.0 * MARGIN
+    required = sum(widths) + gap * (len(widths) - 1)
+
+    # When objects cannot all fit at their current size, shrink their
+    # geometry uniformly around the ground line, then recompute bounds.
+    if required > available:
+        factor = available / required
+        scaled = []
+        for index, obj in candidates:
+            updated = copy.deepcopy(obj)
+            cx = updated["center"]["x"]
+            for part in updated["components"]:
+                part["x"] = round(cx + (part["x"] - cx) * factor, 6)
+                part["y"] = round(GROUND_Y + (part["y"] - GROUND_Y) * factor, 6)
+                part["width"] = round(part["width"] * factor, 6)
+                part["height"] = round(part["height"] * factor, 6)
+            updated["center"]["y"] = round(
+                GROUND_Y + (updated["center"]["y"] - GROUND_Y) * factor, 6
+            )
+            result["objects"][index] = updated
+            scaled.append((index, updated))
+        candidates = scaled
+        widths = [object_bounds(obj)[2] - object_bounds(obj)[0] for _, obj in candidates]
+        gap = min(gap, max(0.0, (available - sum(widths)) / (len(widths) - 1)))
+
+    # Keep the scene centered and distribute any necessary separation.
+    required = sum(widths) + gap * (len(widths) - 1)
+    left_edge = max(MARGIN, (1.0 - required) / 2.0)
+    for index, obj in candidates:
+        left = object_bounds(obj)[0]
+        shifted = shift_object(obj, left_edge - left, 0.0)
+        result["objects"][index] = shifted
+        left_edge += object_bounds(shifted)[2] - object_bounds(shifted)[0] + gap
+
+    return result
+
+
 def compose_scene(
     prompt,
     learned,
@@ -426,6 +485,8 @@ def compose_scene(
     composed = fit_composition(
         composed
     )
+
+    composed = separate_horizontal_overlaps(composed)
 
     composed["version"] = VERSION
     composed["base_version"] = "1.7"
