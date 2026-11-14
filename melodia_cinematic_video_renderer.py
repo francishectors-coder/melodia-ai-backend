@@ -129,17 +129,17 @@ def _portrait_svg(svg_text):
     portrait_width = 576.0
     portrait_height = 1024.0
 
-    # Preserve object proportions while fitting the complete
-    # horizontal composition inside the portrait frame.
-    scale = portrait_width / source_width
+    # Slightly enlarge the complete arrangement without stretching objects.
+    # The 12% enlargement is centered; verify edge objects in the MP4.
+    scale = (portrait_width / source_width) * 1.12
 
-    # Keep the original ground reference near the lower part
-    # of the portrait canvas.
+    # Keep the green ground below the raised subjects and captions.
     original_ground = source_height * 0.82
-    portrait_ground = portrait_height * 0.82
+    portrait_ground = portrait_height * 0.84
 
-    offset_x = 0.0
-    offset_y = portrait_ground - original_ground * scale
+    offset_x = (portrait_width - source_width * scale) / 2.0
+    # Raise the subjects into the middle of the portrait composition.
+    offset_y = portrait_ground - original_ground * scale - portrait_height * 0.14
 
     root = ET.Element(
         f"{{{SVG_NS}}}svg",
