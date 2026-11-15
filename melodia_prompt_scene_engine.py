@@ -311,28 +311,90 @@ def _scene_segments(prompt):
 
 
 
-def _caption_for_scene(description, objects, scene_index, scene_count):
-    """Produce a short factual caption from drawable objects, never prompt text.
+# Curated English captions. No paid translation or language-model API is used.
+# Captions are selected deterministically from themes explicitly mentioned in
+# the user's prompt; they do not claim to be quotations by real people.
+CAPTION_THEMES = {
+    "hope": (
+        "Every sunrise brings a new beginning", "Hope grows quietly within us",
+        "A brighter tomorrow begins today", "Even small steps can lead toward light",
+        "New possibilities arrive with each dawn", "Let hope guide the journey ahead",
+        "Every season carries a chance to begin again", "Light returns after the darkest night",
+    ),
+    "gratitude": (
+        "Gratitude makes ordinary moments precious", "Notice the gifts hidden in today",
+        "A thankful heart finds beauty nearby", "The smallest blessings deserve appreciation",
+        "Give thanks for the beauty around you", "Every peaceful moment is worth cherishing",
+        "Appreciate the wonders of this day", "Gratitude helps us see what truly matters",
+    ),
+    "peace": (
+        "Peace begins with a quiet moment", "Let stillness refresh your spirit",
+        "A calm heart can face a changing world", "Breathe gently and welcome the present",
+        "Find serenity in the simple things", "Peace grows when we choose kindness",
+        "Let the noise fade and calm return", "Carry a little tranquility into today",
+    ),
+    "nature": (
+        "Nature reminds us to slow down", "The mountains stand in quiet strength",
+        "Still waters reflect the beauty of the sky", "Every flower celebrates the gift of life",
+        "The morning light renews the landscape", "Forests offer shelter and quiet wonder",
+        "Beauty unfolds in the changing seasons", "The earth invites us to look more closely",
+    ),
+    "faith": (
+        "Faith gives courage for the road ahead", "Let kindness be the light you share",
+        "A prayerful heart can find quiet strength", "Trust can grow through patient moments",
+        "Compassion makes our world brighter", "A gentle spirit brings comfort to others",
+        "Hope and faith can walk together", "May your journey be filled with grace",
+    ),
+    "inspiration": (
+        "Great journeys begin with a single step", "Small acts of kindness create lasting change",
+        "Choose courage when the path feels uncertain", "Your efforts today shape tomorrow",
+        "Every day offers room to grow", "Keep moving toward what matters most",
+        "Strength grows through patient effort", "A meaningful life is built one day at a time",
+    ),
+}
 
-    This geometric version describes what it can draw. Creative lyrics,
-    narration and arbitrary prompt-to-caption generation are separate features.
-    """
-    unique = []
-    for obj in objects:
-        category = obj["category"]
-        if category in DRAWABLE_CATEGORIES and category not in [o["category"] for o in unique]:
-            unique.append(obj)
-    if not unique:
-        raise ValueError("Cannot caption a scene without drawable objects")
+CAPTION_THEME_KEYWORDS = {
+    "hope": ("hope", "hopeful", "optimism", "new beginning"),
+    "gratitude": ("gratitude", "grateful", "thankful", "thanks"),
+    "peace": ("peace", "peaceful", "calm", "serenity", "tranquility"),
+    "nature": ("nature", "beauty", "sunrise", "mountain", "lake", "forest", "garden", "flower"),
+    "faith": ("faith", "prayer", "spiritual", "grace", "god"),
+    "inspiration": ("inspiration", "inspirational", "motivation", "courage", "strength"),
+}
 
-    focus = unique[scene_index % len(unique)]
-    location = {
-        "left": "on the left",
-        "right": "on the right",
-        "center": "in the center",
-    }[focus["position"]]
-    article = "An" if focus["category"][0] in "aeiou" else "A"
-    return f"{article} {focus['category']} {location}"
+CAPTION_ENDINGS = (
+    ".", "; welcome the possibilities ahead.", "; cherish this moment.",
+    "; let it guide your next step.", "; carry that feeling with you.",
+    "; share its goodness with others.", "; make space for what matters.",
+    "; begin again with a grateful heart.", "; remember what makes life meaningful.",
+    "; find strength in the journey.", "; pause and appreciate the present.",
+    "; look forward with renewed purpose.", "; let your spirit be refreshed.",
+    "; hold on to the beauty of today.", "; move ahead with kindness.",
+    "; discover joy in simple things.",
+)
+
+
+def _caption_themes_for_prompt(prompt):
+    normalized = _normalize(prompt)
+    themes = [
+        theme for theme, keywords in CAPTION_THEME_KEYWORDS.items()
+        if any(re.search(r"(?<!\w)" + re.escape(word) + r"(?!\w)", normalized) for word in keywords)
+    ]
+    return themes or ["inspiration", "nature"]
+
+
+def _caption_for_scene(prompt, scene_index):
+    """Return a deterministic, non-repeating English caption (up to 120 scenes)."""
+    themes = _caption_themes_for_prompt(prompt)
+    theme = themes[scene_index % len(themes)]
+    # The selected phrase changes every cycle; the ending changes only after
+    # all base phrases have been used. The combination is unique for 128
+    # occurrences of the same theme (more than MAX_SCENES).
+    occurrence = scene_index // len(themes)
+    phrases = CAPTION_THEMES[theme]
+    phrase = phrases[occurrence % len(phrases)]
+    ending = CAPTION_ENDINGS[(occurrence // len(phrases)) % len(CAPTION_ENDINGS)]
+    return phrase + ending
 
 
 def _build_scene(
@@ -342,6 +404,7 @@ def _build_scene(
     scene_count=1,
     unique_description=False,
     fallback_objects=None,
+    caption_prompt=None,
 ):
     text = _normalize(description)
 
@@ -383,10 +446,8 @@ def _build_scene(
             "depth": item["depth"],
         })
 
-    # Always derive display text from visible objects, not generation commands.
-    caption = _caption_for_scene(
-        description, extracted, scene_index, scene_count
-    )
+    # Caption is based on the full user prompt, not a geometric object label.
+    caption = _caption_for_scene(caption_prompt or description, scene_index)
 
     return {
         "scene_id": f"scene_{scene_index + 1:03d}",
@@ -513,6 +574,7 @@ def generate_prompt_scenes(
                 scene_count,
                 index < len(segments),
                 fallback_objects=canonical_objects,
+                caption_prompt=prompt,
             )
         )
 
