@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import re
 import shutil
 import subprocess
 import tempfile
@@ -57,6 +58,38 @@ def _camera_endpoints(scenes, cameras):
 
 
 
+def _parse_legacy_svg(markup):
+    """Parse legacy SVG, tolerating repeated identical root xmlns declarations.
+
+    Some older SVG serializers emit xmlns twice on the opening <svg> tag.
+    Remove only redundant identical namespace declarations; other malformed
+    attributes still raise an XML ParseError.
+    """
+    try:
+        return ET.fromstring(markup)
+    except ET.ParseError as original_error:
+        match = re.search(r"<svg\b[^>]*>", markup)
+        if match is None:
+            raise
+        opening = match.group(0)
+        declaration = re.compile(r"\s+(xmlns(?::[A-Za-z_][\w.-]*)?)\s*=\s*([\"'])(.*?)\2")
+        seen = {}
+        changed = [False]
+
+        def deduplicate(found):
+            key, value = found.group(1), found.group(3)
+            if key in seen and seen[key] == value:
+                changed[0] = True
+                return ""
+            seen.setdefault(key, value)
+            return found.group(0)
+
+        fixed_opening = declaration.sub(deduplicate, opening)
+        if not changed[0]:
+            raise original_error
+        return ET.fromstring(markup[:match.start()] + fixed_opening + markup[match.end():])
+
+
 def _render_scene_svg(scene, render_depth_svg, width, height):
     """Use scenic SVG as background, retaining all legacy object groups.
 
@@ -76,7 +109,7 @@ def _render_scene_svg(scene, render_depth_svg, width, height):
 
     scenic_root = ET.fromstring(generate_scenic_svg(
         prompt, width=width, height=height))
-    original_root = ET.fromstring(original)
+    original_root = _parse_legacy_svg(original)
     namespace = "{http://www.w3.org/2000/svg}"
     # Legacy object coordinates are defined in the original SVG viewBox.
     # Scale that coordinate system into the new scenic canvas.
