@@ -70,7 +70,7 @@ def _caption_for_scene(scene, language):
     return _ass_text(value)
 
 
-def _make_ass(plan, path, width, height, bilingual_language=None):
+def _make_ass(plan, path, width, height, bilingual_language=None, captions=True):
     scenes = plan["scenes"]
     timeline = plan["scene_timeline"]
 
@@ -81,6 +81,9 @@ def _make_ass(plan, path, width, height, bilingual_language=None):
     font_size = 42 if portrait else 32
     margin_v = 285 if portrait else 110
     margin_h = 42 if portrait else 35
+
+    watermark_size = 24 if portrait else 20
+    watermark_margin = 30 if portrait else 24
 
     # Portrait captions sit above the green ground, with room for two lines.
     # Landscape caption styling remains unchanged.
@@ -105,6 +108,11 @@ def _make_ass(plan, path, width, height, bilingual_language=None):
             "&H00FFFFFF,&H00FFFFFF,&H00000000,&H80000000,"
             f"-1,0,0,0,100,100,0,0,1,2,1,2,{margin_h},{margin_h},{margin_v},1"
         ),
+        (
+            f"Style: Watermark,Noto Sans,{watermark_size},"
+            "&H66FFFFFF,&H66FFFFFF,&H80000000,&HFF000000,"
+            f"-1,0,0,0,100,100,0,0,1,1,0,9,{watermark_margin},{watermark_margin},{watermark_margin},1"
+        ),
         "",
         "[Events]",
         (
@@ -113,46 +121,54 @@ def _make_ass(plan, path, width, height, bilingual_language=None):
         ),
     ]
 
+    # Watermark is independent of caption mode and stays on screen throughout.
+    duration = _positive(plan.get("total_output_duration_seconds"), "planned video duration")
+    lines.append(
+        f"Dialogue: 1,{_ass_time(0)},{_ass_time(duration)},"
+        "Watermark,,0,0,0,,MELODIA AI"
+    )
+
     count = 0
 
-    for i, (scene, item) in enumerate(zip(scenes, timeline)):
-        start = float(item["start_seconds"])
-        end = float(item["end_seconds"])
+    if captions:
+        for i, (scene, item) in enumerate(zip(scenes, timeline)):
+            start = float(item["start_seconds"])
+            end = float(item["end_seconds"])
 
-        if not (
-            math.isfinite(start)
-            and math.isfinite(end)
-            and 0 <= start < end
-        ):
-            raise ValueError(f"Invalid scene timeline {i}")
+            if not (
+                math.isfinite(start)
+                and math.isfinite(end)
+                and 0 <= start < end
+            ):
+                raise ValueError(f"Invalid scene timeline {i}")
 
-        if i + 1 < len(timeline):
-            end = min(
-                end,
-                float(timeline[i + 1]["start_seconds"])
+            if i + 1 < len(timeline):
+                end = min(
+                    end,
+                    float(timeline[i + 1]["start_seconds"])
+                )
+
+            if end <= start:
+                continue
+
+            english = _caption_for_scene(scene, "en")
+
+            second = (
+                _caption_for_scene(scene, bilingual_language)
+                if bilingual_language
+                else ""
             )
 
-        if end <= start:
-            continue
+            text = english + (r"\N" + second if second else "")
 
-        english = _caption_for_scene(scene, "en")
+            if not text:
+                continue
 
-        second = (
-            _caption_for_scene(scene, bilingual_language)
-            if bilingual_language
-            else ""
-        )
-
-        text = english + (r"\N" + second if second else "")
-
-        if not text:
-            continue
-
-        lines.append(
-            f"Dialogue: 0,{_ass_time(start)},"
-            f"{_ass_time(end)},Default,,0,0,0,,{text}"
-        )
-        count += 1
+            lines.append(
+                f"Dialogue: 0,{_ass_time(start)},"
+                f"{_ass_time(end)},Default,,0,0,0,,{text}"
+            )
+            count += 1
 
     path.write_text(
         "\n".join(lines) + "\n",
@@ -278,16 +294,13 @@ def produce_video(
 
         ass = tmp / "captions.ass"
 
-        caption_count = (
-            _make_ass(
-                plan,
-                ass,
-                width,
-                height,
-                bilingual_language
-            )
-            if captions
-            else 0
+        caption_count = _make_ass(
+            plan,
+            ass,
+            width,
+            height,
+            bilingual_language,
+            captions=captions,
         )
 
         command = [
@@ -308,11 +321,12 @@ def produce_video(
                 str(music_path),
             ]
 
-        if captions:
-            command += [
-                "-vf",
-                "ass=" + _filter_path(ass),
-            ]
+        # Apply the subtitle overlay even when captions are disabled,
+        # because the watermark must remain visible throughout the video.
+        command += [
+            "-vf",
+            "ass=" + _filter_path(ass),
+        ]
 
         command += ["-map", "0:v:0"]
 
@@ -362,6 +376,7 @@ def produce_video(
         "height": height,
         "fps": fps,
         "caption_events": caption_count,
+        "watermark": "MELODIA AI",
         "bilingual_language": bilingual_language,
         "music": bool(music_path),
         "expected_duration_seconds": target_duration,
