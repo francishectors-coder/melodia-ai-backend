@@ -70,7 +70,8 @@ def _caption_for_scene(scene, language):
     return _ass_text(value)
 
 
-def _make_ass(plan, path, width, height, bilingual_language=None, captions=True):
+def _make_ass(plan, path, width, height, bilingual_language=None, captions=True,
+              promo_seconds=0.0):
     scenes = plan["scenes"]
     timeline = plan["scene_timeline"]
 
@@ -127,6 +128,31 @@ def _make_ass(plan, path, width, height, bilingual_language=None, captions=True)
         f"Dialogue: 1,{_ass_time(0)},{_ass_time(duration)},"
         "Watermark,,0,0,0,,MELODIA AI"
     )
+
+    if promo_seconds:
+        promo_start = duration
+        promo_end = duration + promo_seconds
+        center_x = width // 2
+        center_y = height // 2
+        promo_size = 64 if height > width else 56
+        tagline_size = 32 if height > width else 28
+        url_size = 25 if height > width else 23
+        lines.extend([
+            f"Dialogue: 2,{_ass_time(promo_start)},{_ass_time(promo_end)},"
+            f"Default,,0,0,0,,{{\\an5\\pos({center_x},{center_y - int(height * .13)})"
+            f"\\fs{promo_size}\\c&H0077C8E8&}}MELODIA AI",
+            f"Dialogue: 2,{_ass_time(promo_start)},{_ass_time(promo_end)},"
+            f"Default,,0,0,0,,{{\\an5\\pos({center_x},{center_y})"
+            f"\\fs{tagline_size}}}Create. Inspire. Share.",
+            f"Dialogue: 2,{_ass_time(promo_start)},{_ass_time(promo_end)},"
+            f"Default,,0,0,0,,{{\\an5\\pos({center_x},{center_y + int(height * .14)})"
+            f"\\fs{url_size}}}melodia-ai-backend.onrender.com",
+        ])
+        # Extend the watermark event to the full playback duration.
+        lines[lines.index(next(x for x in lines if x.startswith("Dialogue: 1,")))] = (
+            f"Dialogue: 1,{_ass_time(0)},{_ass_time(promo_end)},"
+            "Watermark,,0,0,0,,MELODIA AI"
+        )
 
     count = 0
 
@@ -201,6 +227,7 @@ def produce_video(
     music_volume=0.22,
     captions=True,
     ffmpeg="ffmpeg",
+    promo_seconds=0.0,
 ):
     """Render V2.3 plan through V2.4 and add captions and optional music."""
 
@@ -221,6 +248,12 @@ def produce_video(
         raise ValueError(
             "bilingual_language must be a non-English language code"
         )
+
+    if (isinstance(promo_seconds, bool) or
+            not isinstance(promo_seconds, (int, float)) or
+            not math.isfinite(promo_seconds) or
+            promo_seconds < 0 or promo_seconds > 5):
+        raise ValueError("promo_seconds must be between 0 and 5")
 
     if not isinstance(captions, bool):
         raise ValueError("captions must be boolean")
@@ -270,6 +303,8 @@ def produce_video(
         "planned video duration"
     )
 
+    total_duration = target_duration + float(promo_seconds)
+
     destination = Path(output).resolve()
     destination.parent.mkdir(
         parents=True,
@@ -301,69 +336,57 @@ def produce_video(
             height,
             bilingual_language,
             captions=captions,
+            promo_seconds=promo_seconds,
         )
 
         command = [
-            ffmpeg,
-            "-hide_banner",
-            "-loglevel",
-            "error",
-            "-y",
-            "-i",
-            str(silent),
+            ffmpeg, "-hide_banner", "-loglevel", "error", "-y",
+            "-i", str(silent),
         ]
 
-        if music_path:
+        if promo_seconds:
             command += [
-                "-stream_loop",
-                "-1",
-                "-i",
-                str(music_path),
+                "-f", "lavfi",
+                "-i", (f"color=c=0x101B32:s={width}x{height}:"
+                       f"r={fps}:d={promo_seconds:.6f}"),
             ]
 
-        # Apply the subtitle overlay even when captions are disabled,
-        # because the watermark must remain visible throughout the video.
-        command += [
-            "-vf",
-            "ass=" + _filter_path(ass),
-        ]
+        music_input_index = 2 if promo_seconds else 1
+        if music_path:
+            command += ["-stream_loop", "-1", "-i", str(music_path)]
 
-        command += ["-map", "0:v:0"]
+        if promo_seconds:
+            # Concatenate the existing main video with a static closing card.
+            # Apply the same ASS overlay to both so the watermark persists.
+            command += [
+                "-filter_complex",
+                ("[0:v]setpts=PTS-STARTPTS,format=yuv420p[main];"
+                 "[1:v]setpts=PTS-STARTPTS,format=yuv420p[ending];"
+                 "[main][ending]concat=n=2:v=1:a=0[joined];"
+                 f"[joined]ass={_filter_path(ass)}[finalv]"),
+                "-map", "[finalv]",
+            ]
+        else:
+            command += ["-vf", "ass=" + _filter_path(ass),
+                        "-map", "0:v:0"]
 
         if music_path:
             command += [
-                "-map",
-                "1:a:0",
+                "-map", f"{music_input_index}:a:0",
                 "-af",
-                (
-                    f"volume={volume:.6f},"
-                    f"atrim=duration={target_duration:.6f},"
-                    "asetpts=PTS-STARTPTS"
-                ),
-                "-c:a",
-                "aac",
-                "-b:a",
-                "128k",
+                (f"volume={volume:.6f},"
+                 f"atrim=duration={total_duration:.6f},"
+                 "asetpts=PTS-STARTPTS"),
+                "-c:a", "aac", "-b:a", "128k",
             ]
         else:
             command += ["-an"]
 
-        # Explicitly restrict output duration.
-        # Do not rely on -shortest with looping audio.
         command += [
-            "-c:v",
-            "libx264",
-            "-preset",
-            "veryfast",
-            "-crf",
-            "22",
-            "-pix_fmt",
-            "yuv420p",
-            "-t",
-            f"{target_duration:.6f}",
-            "-movflags",
-            "+faststart",
-            str(destination),
+            "-c:v", "libx264", "-preset", "veryfast", "-crf", "22",
+            "-pix_fmt", "yuv420p",
+            "-t", f"{total_duration:.6f}",
+            "-movflags", "+faststart", str(destination),
         ]
 
         subprocess.run(command, check=True)
@@ -379,7 +402,9 @@ def produce_video(
         "watermark": "MELODIA AI",
         "bilingual_language": bilingual_language,
         "music": bool(music_path),
-        "expected_duration_seconds": target_duration,
+        "expected_duration_seconds": total_duration,
+        "main_duration_seconds": target_duration,
+        "promotional_ending_seconds": float(promo_seconds),
     }
 
 
@@ -434,6 +459,11 @@ def main():
         action="store_true"
     )
 
+    parser.add_argument(
+        "--promo-seconds", type=float, default=0.0,
+        help="Optional closing promo length, up to 5 seconds"
+    )
+
     args = parser.parse_args()
 
     plan = json.loads(
@@ -451,6 +481,7 @@ def main():
         music=args.music,
         music_volume=args.music_volume,
         captions=not args.no_captions,
+        promo_seconds=args.promo_seconds,
     )
 
     print(
