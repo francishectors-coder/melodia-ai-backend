@@ -455,6 +455,7 @@ def produce_v28_video(
     music_volume=0.22,
     captions=True,
     ffmpeg="ffmpeg",
+    promo_seconds=5.0,
 ):
     """
     Render an MP4 from a prompt or an existing
@@ -474,10 +475,20 @@ def produce_v28_video(
     if not isinstance(captions, bool):
         raise ValueError("captions must be boolean")
 
+    if (isinstance(promo_seconds, bool)
+            or not isinstance(promo_seconds, (int, float))
+            or not math.isfinite(promo_seconds)
+            or not 0 <= promo_seconds <= 5):
+        raise ValueError("promo_seconds must be between 0 and 5")
+
     if prompt is not None:
+        total_requested = _positive_number(duration_seconds, "Requested duration")
+        main_duration = total_requested - float(promo_seconds)
+        if main_duration <= 0:
+            raise ValueError("Requested duration must exceed promotional ending")
         integration_result = generate_cinematic_plan(
             prompt=prompt,
-            duration_seconds=duration_seconds,
+            duration_seconds=main_duration,
             aspect_ratio=aspect_ratio,
             scene_seconds=scene_seconds,
             camera_intensity=camera_intensity,
@@ -551,6 +562,13 @@ def produce_v28_video(
             "Planned duration differs from request"
         )
 
+    # Existing integration results describe main content only. Do not
+    # silently shorten or reinterpret their scene timelines.
+    if prompt is None:
+        total_requested = requested + float(promo_seconds)
+    elif abs((planned + float(promo_seconds)) - total_requested) > 0.001:
+        raise ValueError("Main video and promotional ending exceed requested duration")
+
     if not isinstance(auto_music, bool):
         raise ValueError("auto_music must be boolean")
     if music is not None and not isinstance(music, (str, Path)):
@@ -577,7 +595,7 @@ def produce_v28_video(
             music_metadata = generate_instrumental(
                 soundtrack_prompt,
                 selected_music,
-                duration_seconds=requested,
+                duration_seconds=total_requested,
             )
 
         result = produce_video(
@@ -590,6 +608,7 @@ def produce_v28_video(
             music_volume=music_volume,
             captions=captions,
             ffmpeg=ffmpeg,
+            promo_seconds=promo_seconds,
         )
 
     music_mode = "provided" if music is not None else (
@@ -600,8 +619,9 @@ def produce_v28_video(
         "project": "MELODIA AI",
         "version": VERSION,
         "engine": "prompt_mp4_integration",
-        "requested_duration_seconds": requested,
+        "requested_duration_seconds": total_requested,
         "planned_duration_seconds": planned,
+        "promotional_ending_seconds": float(promo_seconds),
         "scene_count": len(
             production_plan["scenes"]
         ),
@@ -720,6 +740,13 @@ def main():
         default="ffmpeg",
     )
 
+    parser.add_argument(
+        "--promo-seconds",
+        type=float,
+        default=5.0,
+        help="Promotional ending duration (0 to 5 seconds; default 5)",
+    )
+
     args = parser.parse_args()
 
     existing_plan = None
@@ -749,6 +776,7 @@ def main():
         music_volume=args.music_volume,
         captions=not args.no_captions,
         ffmpeg=args.ffmpeg,
+        promo_seconds=args.promo_seconds,
     )
 
     print(
