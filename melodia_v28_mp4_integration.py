@@ -23,6 +23,7 @@ from melodia_prompt_cinematic_integration import (
 )
 from melodia_video_production_engine import produce_video
 from melodia_instrumental_music_engine import generate_instrumental
+from melodia_caption_translation_engine import translate_captions
 
 from melodia_geometric_object_learner import EXAMPLES
 from melodia_automatic_structure_learner import learn_all
@@ -344,6 +345,8 @@ def prepare_production_plan(
     language = _validate_language(
         bilingual_language
     )
+    if language is not None and language not in ("ta", "hi", "ml", "te"):
+        raise ValueError("Unsupported bilingual language")
 
     translations = _load_bilingual_captions(
         bilingual_captions
@@ -420,9 +423,9 @@ def prepare_production_plan(
 
         if language is not None:
             translated = translations.get(scene_id)
-
-            if translated is not None:
-                captions[language] = translated
+            if not isinstance(translated, str) or not translated.strip():
+                raise ValueError(f"Missing translation for scene {scene_id}")
+            captions[language] = translated.strip()
 
         converted_scene["captions"] = captions
 
@@ -495,9 +498,37 @@ def produce_v28_video(
                 "Existing plan aspect ratio mismatch"
             )
 
+    # Translate only when a second language was requested and the caller
+    # did not already provide verified translations. English remains intact.
+    language = _validate_language(bilingual_language)
+    if language is not None and not captions:
+        raise ValueError("Bilingual captions require captions=True")
+    if language is not None and bilingual_captions is None:
+        cinematic = integration_result.get("cinematic_plan")
+        if not isinstance(cinematic, dict):
+            raise ValueError("Missing cinematic plan for translation")
+        source_scenes = cinematic.get("scenes")
+        if not isinstance(source_scenes, list) or not source_scenes:
+            raise ValueError("Missing scenes for translation")
+        english_captions = {}
+        for index, scene in enumerate(source_scenes):
+            if not isinstance(scene, dict):
+                raise ValueError("Invalid scene for translation")
+            scene_id = scene.get("scene_id", f"scene_{index + 1:03d}")
+            scene_captions = scene.get("captions") or {}
+            if not isinstance(scene_captions, dict):
+                raise ValueError("Invalid scene captions for translation")
+            english = scene_captions.get("en") or scene.get("caption_en")
+            if not isinstance(english, str) or not english.strip():
+                raise ValueError(f"Missing English caption for {scene_id}")
+            if scene_id in english_captions:
+                raise ValueError(f"Duplicate scene ID: {scene_id}")
+            english_captions[scene_id] = english.strip()
+        bilingual_captions = translate_captions(english_captions, language)
+
     production_plan = prepare_production_plan(
         integration_result,
-        bilingual_language=bilingual_language,
+        bilingual_language=language,
         bilingual_captions=bilingual_captions,
     )
 
