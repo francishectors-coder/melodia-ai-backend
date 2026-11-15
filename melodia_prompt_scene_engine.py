@@ -312,42 +312,27 @@ def _scene_segments(prompt):
 
 
 def _caption_for_scene(description, objects, scene_index, scene_count):
-    """Create a distinct, factual English caption for each scene.
+    """Produce a short factual caption from drawable objects, never prompt text.
 
-    Visual descriptions remain unchanged. Repeated prompt segments
-    rotate through recognized objects rather than repeating the
-    complete prompt as an on-screen caption.
+    This geometric version describes what it can draw. Creative lyrics,
+    narration and arbitrary prompt-to-caption generation are separate features.
     """
-    description = " ".join(description.strip().split())
-    if scene_count == 1 or scene_index == 0:
-        return description
-
-    categories = []
+    unique = []
     for obj in objects:
         category = obj["category"]
-        if category != "abstract" and category not in categories:
-            categories.append(category)
+        if category in DRAWABLE_CATEGORIES and category not in [o["category"] for o in unique]:
+            unique.append(obj)
+    if not unique:
+        raise ValueError("Cannot caption a scene without drawable objects")
 
-    if not categories:
-        return f"{description} — scene {scene_index + 1}"
-
-    focus = categories[(scene_index - 1) % len(categories)]
-    position = next(
-        (obj["position"] for obj in objects if obj["category"] == focus),
-        "center",
-    )
-    position_phrase = {
+    focus = unique[scene_index % len(unique)]
+    location = {
         "left": "on the left",
         "right": "on the right",
         "center": "in the center",
-    }[position]
-
-    # The focus and its position come from the planned geometry;
-    # no new objects, actions, or translations are invented.
-    caption = f"The {focus} {position_phrase}"
-    if scene_index > len(categories):
-        caption += f" — scene {scene_index + 1}"
-    return caption
+    }[focus["position"]]
+    article = "An" if focus["category"][0] in "aeiou" else "A"
+    return f"{article} {focus['category']} {location}"
 
 
 def _build_scene(
@@ -397,15 +382,9 @@ def _build_scene(
             "depth": item["depth"],
         })
 
-    caption = (
-        " ".join(description.strip().split())
-        if unique_description
-        else _caption_for_scene(
-            description,
-            extracted,
-            scene_index,
-            scene_count,
-        )
+    # Always derive display text from visible objects, not generation commands.
+    caption = _caption_for_scene(
+        description, extracted, scene_index, scene_count
     )
 
     return {
