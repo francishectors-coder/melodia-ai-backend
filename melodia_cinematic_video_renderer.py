@@ -90,6 +90,79 @@ def _parse_legacy_svg(markup):
         return ET.fromstring(markup[:match.start()] + fixed_opening + markup[match.end():])
 
 
+def _bounds_intersect(a, b, padding=0.0):
+    """Test pixel-space rectangles, including a small visual breathing gap."""
+    return (a[0] < b[2] + padding and a[2] + padding > b[0]
+            and a[1] < b[3] + padding and a[3] + padding > b[1])
+
+
+def _clear_scenic_collisions(scenic_root, scene, width, height):
+    """Remove only scenic decorative trees/flowers obscured by legacy objects.
+
+    V2.9 scenic SVG emits each tree as a brown trunk followed by a green
+    ellipse, and each flower as a green stem followed by six circles.
+    Preserve all legacy objects and every nonconflicting scenic decoration.
+    """
+    from melodia_automatic_scene_composer import object_bounds
+
+    obstacles = []
+    for obj in scene.get("objects", []):
+        if not isinstance(obj, dict) or not obj.get("components"):
+            continue
+        left, top, right, bottom = object_bounds(obj)
+        obstacles.append((left * width, top * height,
+                          right * width, bottom * height))
+    if not obstacles:
+        return
+
+    children = list(scenic_root)
+    namespace = "{http://www.w3.org/2000/svg}"
+    padding = min(width, height) * 0.012
+    remove = set()
+    i = 0
+    while i < len(children):
+        node = children[i]
+        # Trees: trunk rectangle immediately followed by green canopy ellipse.
+        if (node.tag == namespace + "rect" and node.get("fill") == "#735139"
+                and i + 1 < len(children)
+                and children[i + 1].tag == namespace + "ellipse"
+                and children[i + 1].get("fill") in {"#26784a", "#398958", "#4a9b59"}):
+            canopy = children[i + 1]
+            cx, cy = float(canopy.get("cx")), float(canopy.get("cy"))
+            rx, ry = float(canopy.get("rx")), float(canopy.get("ry"))
+            x, y = float(node.get("x")), float(node.get("y"))
+            w, h = float(node.get("width")), float(node.get("height"))
+            bounds = (min(x, cx-rx), min(y, cy-ry),
+                      max(x+w, cx+rx), max(y+h, cy+ry))
+            if any(_bounds_intersect(bounds, other, padding) for other in obstacles):
+                remove.update((node, canopy))
+            i += 2
+            continue
+
+        # Flowers: stem followed by five petals and one center circle.
+        if (node.tag == namespace + "line" and node.get("stroke") == "#287344"
+                and i + 6 < len(children)
+                and all(item.tag == namespace + "circle"
+                        for item in children[i+1:i+7])
+                and children[i+6].get("fill") == "#f7e37c"):
+            parts = children[i:i+7]
+            xs = [float(node.get("x1")), float(node.get("x2"))]
+            ys = [float(node.get("y1")), float(node.get("y2"))]
+            for circle in parts[1:]:
+                cx, cy, radius = (float(circle.get(key)) for key in ("cx", "cy", "r"))
+                xs.extend((cx-radius, cx+radius))
+                ys.extend((cy-radius, cy+radius))
+            bounds = (min(xs), min(ys), max(xs), max(ys))
+            if any(_bounds_intersect(bounds, other, padding) for other in obstacles):
+                remove.update(parts)
+            i += 7
+            continue
+        i += 1
+
+    for node in remove:
+        scenic_root.remove(node)
+
+
 def _render_scene_svg(scene, render_depth_svg, width, height):
     """Use scenic SVG as background, retaining all legacy object groups.
 
@@ -109,6 +182,7 @@ def _render_scene_svg(scene, render_depth_svg, width, height):
 
     scenic_root = ET.fromstring(generate_scenic_svg(
         prompt, width=width, height=height))
+    _clear_scenic_collisions(scenic_root, scene, width, height)
     original_root = _parse_legacy_svg(original)
     namespace = "{http://www.w3.org/2000/svg}"
     # Legacy object coordinates are defined in the original SVG viewBox.
