@@ -13,6 +13,7 @@ import shutil
 import subprocess
 import tempfile
 from pathlib import Path
+from xml.etree import ElementTree as ET
 
 VERSION = "2.4"
 
@@ -53,6 +54,50 @@ def _camera_endpoints(scenes, cameras):
             # crop, but zoompan handles the smooth interpolation safely.
         endpoints.append((start, end))
     return endpoints
+
+
+
+def _render_scene_svg(scene, render_depth_svg, width, height):
+    """Use scenic SVG as background, retaining all legacy object groups.
+
+    The V1.8 composer draws sky, sun, ground as direct SVG elements and
+    places the complete, positioned object artwork in top-level <g> nodes.
+    We replace only the background and retain those groups unchanged.
+    """
+    original = render_depth_svg(scene)
+    prompt = scene.get("scenic_prompt")
+    if not isinstance(prompt, str) or not prompt.strip():
+        return original
+
+    from melodia_scenic_visual_engine import analyze_scenery, generate_scenic_svg
+    features = analyze_scenery(prompt)
+    if not any(features.values()):
+        return original
+
+    scenic_root = ET.fromstring(generate_scenic_svg(
+        prompt, width=width, height=height))
+    original_root = ET.fromstring(original)
+    namespace = "{http://www.w3.org/2000/svg}"
+    # Legacy object coordinates are defined in the original SVG viewBox.
+    # Scale that coordinate system into the new scenic canvas.
+    original_viewbox = original_root.get("viewBox")
+    if original_viewbox:
+        parts = [float(v) for v in original_viewbox.replace(",", " ").split()]
+        if len(parts) != 4 or parts[2] <= 0 or parts[3] <= 0:
+            raise ValueError("Invalid legacy scene viewBox")
+        x, y, source_w, source_h = parts
+    else:
+        x = y = 0.0
+        source_w = float(original_root.get("width", width))
+        source_h = float(original_root.get("height", height))
+    scale_x, scale_y = width / source_w, height / source_h
+    wrapper = ET.SubElement(scenic_root, namespace + "g", {
+        "transform": f"scale({scale_x:.9g} {scale_y:.9g}) translate({-x:.9g} {-y:.9g})"
+    })
+    for child in original_root:
+        if child.tag == namespace + "g" or child.tag == "g":
+            wrapper.append(child)
+    return ET.tostring(scenic_root, encoding="unicode")
 
 
 def render_video(plan, output, *, width=1280, height=720, fps=30, ffmpeg="ffmpeg"):
@@ -133,7 +178,7 @@ def render_video(plan, output, *, width=1280, height=720, fps=30, ffmpeg="ffmpeg
         for i, scene in enumerate(scenes):
             if scene.get("status") != "generated":
                 raise ValueError(f"Scene {i} is not a generated V1.9 geometric scene")
-            svg = render_depth_svg(scene)
+            svg = _render_scene_svg(scene, render_depth_svg, width, height)
             png = tmp / f"scene_{i:04d}.png"
             cairosvg.svg2png(bytestring=svg.encode("utf-8"), write_to=str(png),
                              output_width=width, output_height=height)
