@@ -474,13 +474,12 @@ def generate():
             "error": str(error)
         }), 400
 
-    # Preserve legacy jobs, including quota recovery and bilingual jobs.
-    # V2.8 currently requires English primary captions and supplied
-    # translations for bilingual mode; do not silently drop translations.
-    # The [FREE TEST] path remains on the legacy worker as before.
+    # Preserve legacy routing for non-English primary-language jobs and
+    # the explicit [FREE TEST] path. English-primary bilingual requests
+    # now use V2.8, which generates translations when none are supplied.
     use_v28 = (
         settings.get("language") == "English"
-        and settings.get("captions") in ("single", "none")
+        and settings.get("captions") in ("single", "bilingual", "none")
         and "[FREE TEST]" not in settings.get("prompt", "").upper()
     )
 
