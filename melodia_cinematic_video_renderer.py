@@ -7,6 +7,7 @@ timing, captions and audio integration remain unchanged.
 from __future__ import annotations
 
 import argparse
+import copy
 import json
 import math
 import re
@@ -163,6 +164,69 @@ def _clear_scenic_collisions(scenic_root, scene, width, height):
         scenic_root.remove(node)
 
 
+def _resolve_foreground_collisions(scene):
+    """Fit colliding ground objects apart without dropping requested artwork.
+
+    Operates on a private scene copy, deterministically. First use the existing
+    V1.8 horizontal layout algorithm; only invoke it when two visible object
+    bounds actually intersect. If protected relationships prevent that layout
+    from separating a pair, reduce their geometry around their own centers.
+    """
+    from melodia_automatic_scene_composer import (
+        object_bounds, separate_horizontal_overlaps,
+    )
+
+    objects = scene.get("objects", [])
+    if len(objects) < 2:
+        return scene
+
+    def collisions(items):
+        pairs = []
+        for i, first in enumerate(items):
+            if not first.get("components"):
+                continue
+            a = object_bounds(first)
+            for j in range(i + 1, len(items)):
+                second = items[j]
+                if not second.get("components"):
+                    continue
+                # Respect explicitly requested vertical stacking.
+                relations = scene.get("relationships", [])
+                first_id, second_id = first.get("id"), second.get("id")
+                protected = any(
+                    isinstance(rel, dict)
+                    and {rel.get("subject"), rel.get("object")} == {first_id, second_id}
+                    and rel.get("relation") in ("above", "below", "on_top_of")
+                    for rel in relations
+                )
+                if not protected and _bounds_intersect(a, object_bounds(second), 0.012):
+                    pairs.append((i, j))
+        return pairs
+
+    if not collisions(objects):
+        return scene
+    adjusted = separate_horizontal_overlaps(copy.deepcopy(scene), gap=0.035)
+    if not collisions(adjusted["objects"]):
+        return adjusted
+
+    # Final fallback for exceptionally wide or vertically overlapping artwork:
+    # scale the actual shapes rather than silently removing any requested item.
+    for _ in range(16):
+        pairs = collisions(adjusted["objects"])
+        if not pairs:
+            break
+        involved = {idx for pair in pairs for idx in pair}
+        for idx in involved:
+            obj = adjusted["objects"][idx]
+            cx, cy = obj["center"]["x"], obj["center"]["y"]
+            for part in obj["components"]:
+                part["x"] = cx + (part["x"] - cx) * 0.90
+                part["y"] = cy + (part["y"] - cy) * 0.90
+                part["width"] *= 0.90
+                part["height"] *= 0.90
+    return adjusted
+
+
 def _render_scene_svg(scene, render_depth_svg, width, height):
     """Use scenic SVG as background, retaining all legacy object groups.
 
@@ -170,6 +234,7 @@ def _render_scene_svg(scene, render_depth_svg, width, height):
     places the complete, positioned object artwork in top-level <g> nodes.
     We replace only the background and retain those groups unchanged.
     """
+    scene = _resolve_foreground_collisions(scene)
     original = render_depth_svg(scene)
     prompt = scene.get("scenic_prompt")
     if not isinstance(prompt, str) or not prompt.strip():
