@@ -97,6 +97,9 @@ WORD_RE = re.compile(r"[a-z]+")
 
 MAX_SCENES = 120
 
+# Categories drawable by the current V2.8 geometric renderer.
+DRAWABLE_CATEGORIES = frozenset(("tree", "house", "flower", "animal", "vehicle"))
+
 
 def _positive_number(value, name, maximum=None):
     if (
@@ -353,10 +356,23 @@ def _build_scene(
     duration,
     scene_count=1,
     unique_description=False,
+    fallback_objects=None,
 ):
     text = _normalize(description)
 
-    extracted = _extract_objects(text)
+    extracted = [
+        item for item in _extract_objects(text)
+        if item["category"] in DRAWABLE_CATEGORIES
+    ]
+    # Instruction-only sentences are not separate abstract visual objects.
+    # Carry the recognized composition from the full prompt instead.
+    if not extracted and fallback_objects:
+        extracted = [dict(item) for item in fallback_objects]
+    if not extracted:
+        raise ValueError(
+            "Prompt has no drawable objects. Current geometric renderer supports: "
+            + ", ".join(sorted(DRAWABLE_CATEGORIES))
+        )
 
     objects = []
 
@@ -432,6 +448,19 @@ def generate_prompt_scenes(
 
     segments = _scene_segments(prompt)
 
+    # Extract supported visual objects from the full prompt before splitting
+    # it into scene descriptions. This prevents text-only directions from
+    # producing abstract-only scenes and preserves explicit object positions.
+    fallback_objects = [
+        item for item in _extract_objects(normalized)
+        if item["category"] in DRAWABLE_CATEGORIES
+    ]
+    if not fallback_objects:
+        raise ValueError(
+            "Prompt has no drawable objects. Current geometric renderer supports: "
+            + ", ".join(sorted(DRAWABLE_CATEGORIES))
+        )
+
     requested_count = max(
         len(segments),
         math.ceil(
@@ -486,6 +515,7 @@ def generate_prompt_scenes(
                 duration,
                 scene_count,
                 index < len(segments),
+                fallback_objects=fallback_objects,
             )
         )
 
