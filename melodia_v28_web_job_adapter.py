@@ -1,3 +1,4 @@
+
 """MELODIA AI V2.8 web-job adapter.
 
 Runs a V2.8 prompt-to-MP4 job using the existing JSON job format.
@@ -73,12 +74,10 @@ def _settings(job: dict) -> dict:
         language = LANGUAGE_CODES.get(second)
         if language is None:
             raise ValueError("Unsupported second language")
-        # The V2.8 engine accepts a scene-ID-to-translation dictionary or JSON path.
-        # It does not automatically translate captions; require real translations.
+        # None requests automatic translation in the V2.8 MP4 integration.
+        # A supplied mapping or JSON path remains supported for compatibility.
         translations = settings.get("bilingual_captions")
-        if translations is None:
-            raise ValueError("Bilingual captions require translated scene text")
-        if not isinstance(translations, (dict, str)):
+        if translations is not None and not isinstance(translations, (dict, str)):
             raise ValueError("Invalid bilingual caption source")
 
     music_mode = settings.get("music", "peaceful")
