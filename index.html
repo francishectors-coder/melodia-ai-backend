@@ -121,9 +121,20 @@ button:disabled{
 }
 #videoResult h2{color:#e7c879}
 video{
+ display:block;
  width:100%;
+ height:auto;
  background:#000;
  border-radius:10px;
+ margin:0 auto;
+}
+/* Fit portrait previews inside the viewport; downloaded MP4 is unchanged. */
+video.portraitPreview{
+ width:auto;
+ max-width:100%;
+ max-height:min(70vh,650px);
+ aspect-ratio:9/16;
+ object-fit:contain;
 }
 .progressOuter{
  width:100%;
@@ -441,6 +452,7 @@ function setProgress(value){
 }
 
 function resetResult(){
+ $("videoPlayer").classList.remove("portraitPreview");
  $("videoPlayer").pause();
  $("videoPlayer").removeAttribute("src");
  $("videoPlayer").load();
@@ -756,6 +768,10 @@ async function monitorJob(
   }
  }
 }
+
+$("videoPlayer").addEventListener("loadedmetadata",function(){
+ this.classList.toggle("portraitPreview",this.videoHeight>this.videoWidth);
+});
 
 updateSecond();
 toggleSecond();
