@@ -321,6 +321,51 @@ def _convert_scene(scene, learned, seed):
     return result
 
 
+def _scenic_prompt_for_scene(full_prompt, description, index, count):
+    """Build a different illustrated background focus per scene.
+
+    The renderer accepts a single text description per scene. Rotate through
+    scenery features actually requested by the user, without adding unrelated
+    features. Object identities and coordinates are intentionally untouched.
+    """
+    import re
+
+    text = full_prompt if isinstance(full_prompt, str) else ""
+    text = text.strip()
+    if not text:
+        text = description
+
+    categories = (
+        ("sunrise", ("sunrise", "dawn", "morning")),
+        ("mountains", ("mountain", "mountains", "hill", "hills", "valley")),
+        ("lake", ("lake", "pond", "river", "waterfall", "ocean", "sea")),
+        ("forest", ("forest", "woods", "woodland", "trees", "tree")),
+        ("garden", ("garden", "flowers", "flower", "meadow", "park")),
+        ("sunset", ("sunset", "dusk", "evening")),
+        ("night", ("night", "moonlight", "starry")),
+        ("clouds", ("cloud", "clouds", "cloudy")),
+    )
+    found = [
+        name for name, aliases in categories
+        if any(re.search(r"(?<!\w)" + re.escape(word) + r"(?!\w)", text, re.I)
+               for word in aliases)
+    ]
+    if not found:
+        return description
+
+    # Rotate related scenic subjects, not the entire prompt. The original
+    # caption and object composition are preserved in separate scene fields.
+    # When a single feature was requested, vary the sky treatment without
+    # inventing additional objects.
+    focus_index = (index * len(found) // max(1, count)) % len(found)
+    focus = found[focus_index]
+    companions = [name for name in found if name != focus]
+    if companions and count > 1:
+        companion = found[(focus_index + 1) % len(found)]
+        return f"Beautiful scenic landscape featuring {focus} and {companion}."
+    return f"Beautiful scenic landscape featuring {focus}."
+
+
 def prepare_production_plan(
     integration_result,
     *,
@@ -433,7 +478,9 @@ def prepare_production_plan(
         # V2.9 scenery metadata. The renderer will consume this in the
         # next integration step; older renderers safely ignore these keys.
         if isinstance(scenic_prompt, str) and scenic_prompt.strip():
-            converted_scene["scenic_prompt"] = scenic_prompt.strip()
+            converted_scene["scenic_prompt"] = _scenic_prompt_for_scene(
+                scenic_prompt, description, index, len(scenes)
+            )
             converted_scene["scenic_seed"] = index
 
         converted.append(converted_scene)
