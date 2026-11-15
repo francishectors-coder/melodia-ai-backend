@@ -327,7 +327,7 @@ def prepare_video_settings(data):
             "second_language": None,
             "music": selected_music,
             "duration": 0.5,
-            "aspect_ratio": "16:9",
+            "aspect_ratio": data.get("aspect_ratio", "16:9"),
             "audio": selected_audio
         }
         error = validate_settings(settings)
@@ -349,7 +349,7 @@ def prepare_video_settings(data):
         captions = analysis["captions"]
         second = analysis["second_language"]
         music = analysis["music"]
-        aspect = analysis["aspect_ratio"]
+        aspect = data.get("aspect_ratio", analysis["aspect_ratio"])
 
         # Only the settings supported by the
         # existing video pipeline are passed.
