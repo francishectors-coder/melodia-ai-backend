@@ -349,9 +349,10 @@ def _build_scene(
         item for item in _extract_objects(text)
         if item["category"] in DRAWABLE_CATEGORIES
     ]
-    # Instruction-only sentences are not separate abstract visual objects.
-    # Carry the recognized composition from the full prompt instead.
-    if not extracted and fallback_objects:
+    # Keep the full composition fixed across scenes, including objects that
+    # are not named again in later instructions. The description still drives
+    # the scene's caption focus, but never moves an existing object.
+    if fallback_objects:
         extracted = [dict(item) for item in fallback_objects]
     if not extracted:
         raise ValueError(
@@ -440,6 +441,23 @@ def generate_prompt_scenes(
             + ", ".join(sorted(DRAWABLE_CATEGORIES))
         )
 
+    # Establish one canonical composition for the entire video. Later
+    # sentences often mention the same object again (for example, "keep the
+    # flower visible") and must not change its position or create duplicates.
+    # Use the first complete sentence as the composition when it contains
+    # repeated categories (e.g. two trees); otherwise use the first mention
+    # of each category from the complete prompt.
+    first_segment_objects = [
+        item for item in _extract_objects(_normalize(segments[0]))
+        if item["category"] in DRAWABLE_CATEGORIES
+    ]
+    canonical_objects = [dict(item) for item in first_segment_objects]
+    represented = {item["category"] for item in canonical_objects}
+    for item in fallback_objects:
+        if item["category"] not in represented:
+            canonical_objects.append(dict(item))
+            represented.add(item["category"])
+
     requested_count = max(
         len(segments),
         math.ceil(
@@ -494,7 +512,7 @@ def generate_prompt_scenes(
                 duration,
                 scene_count,
                 index < len(segments),
-                fallback_objects=fallback_objects,
+                fallback_objects=canonical_objects,
             )
         )
 
