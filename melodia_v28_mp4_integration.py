@@ -326,6 +326,7 @@ def prepare_production_plan(
     *,
     bilingual_language=None,
     bilingual_captions=None,
+    scenic_prompt=None,
 ):
     """
     Prepare a V2.3 orchestration plan for the
@@ -428,6 +429,12 @@ def prepare_production_plan(
             captions[language] = translated.strip()
 
         converted_scene["captions"] = captions
+
+        # V2.9 scenery metadata. The renderer will consume this in the
+        # next integration step; older renderers safely ignore these keys.
+        if isinstance(scenic_prompt, str) and scenic_prompt.strip():
+            converted_scene["scenic_prompt"] = scenic_prompt.strip()
+            converted_scene["scenic_seed"] = index
 
         converted.append(converted_scene)
 
@@ -541,6 +548,7 @@ def produce_v28_video(
         integration_result,
         bilingual_language=language,
         bilingual_captions=bilingual_captions,
+        scenic_prompt=(prompt if prompt is not None else integration_result.get("prompt")),
     )
 
     requested = _positive_number(
