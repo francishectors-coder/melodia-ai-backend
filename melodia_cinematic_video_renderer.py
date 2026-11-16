@@ -279,31 +279,62 @@ def _resolve_foreground_collisions(scene):
     return adjusted
 
 
-def _render_scene_svg(scene, render_depth_svg, width, height):
-    """Use scenic SVG as background, retaining all legacy object groups.
+def _scenic_ground_y(features):
+    """Match the exact visible ground boundary in the V2.9 SVG background."""
+    return 0.63 if features["water"] else 0.70
 
-    The V1.8 composer draws sky, sun, ground as direct SVG elements and
-    places the complete, positioned object artwork in top-level <g> nodes.
-    We replace only the background and retain those groups unchanged.
+
+def _align_foreground_to_scenic_ground(scene, ground_y):
+    """Anchor each independent ground object to the scenic horizon.
+
+    Work on component geometry before SVG conversion so depth rendering and
+    decorative collision detection see the same final coordinates.
+    """
+    from melodia_automatic_scene_composer import object_bounds, shift_object
+
+    result = copy.deepcopy(scene)
+    relations = result.get("relationships", [])
+    vertical = {"above", "below", "on_top_of"}
+    protected = set()
+    for relation in relations:
+        if isinstance(relation, dict) and relation.get("relation") in vertical:
+            protected.add(relation.get("subject"))
+            protected.add(relation.get("target", relation.get("object")))
+    categories = {"tree", "house", "vehicle", "animal", "flower"}
+    for index, obj in enumerate(result.get("objects", [])):
+        if (obj.get("category") not in categories or
+                obj.get("id") in protected or not obj.get("components")):
+            continue
+        bottom = object_bounds(obj)[3]
+        result["objects"][index] = shift_object(obj, 0.0, ground_y - bottom)
+    return result
+
+
+def _render_scene_svg(scene, render_depth_svg, width, height):
+    """Merge scenic background and legacy artwork using one ground reference.
+
+    Foreground collisions are resolved first. Then independent grounded
+    objects are anchored to the actual scenic ground line, rather than the
+    legacy composer's fixed 0.82 coordinate. Scenic decoration collision
+    filtering runs only after final foreground positions are established.
     """
     scene = _resolve_foreground_collisions(scene)
-    original = render_depth_svg(scene)
     prompt = scene.get("scenic_prompt")
     if not isinstance(prompt, str) or not prompt.strip():
-        return original
+        return render_depth_svg(scene)
 
     from melodia_scenic_visual_engine import analyze_scenery, generate_scenic_svg
     features = analyze_scenery(prompt)
     if not any(features.values()):
-        return original
+        return render_depth_svg(scene)
 
+    scene = _align_foreground_to_scenic_ground(scene, _scenic_ground_y(features))
+    original = render_depth_svg(scene)
     scenic_root = ET.fromstring(generate_scenic_svg(
         prompt, width=width, height=height))
     _clear_scenic_collisions(scenic_root, scene, width, height)
     original_root = _parse_legacy_svg(original)
     namespace = "{http://www.w3.org/2000/svg}"
-    # Legacy object coordinates are defined in the original SVG viewBox.
-    # Scale that coordinate system into the new scenic canvas.
     original_viewbox = original_root.get("viewBox")
     if original_viewbox:
         parts = [float(v) for v in original_viewbox.replace(",", " ").split()]
