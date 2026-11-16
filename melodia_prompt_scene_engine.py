@@ -27,7 +27,7 @@ import math
 import re
 from pathlib import Path
 
-VERSION = "2.8"
+VERSION = "2.8.1"
 
 SUPPORTED_ASPECTS = {
     "16:9": (1280, 720),
@@ -383,18 +383,39 @@ def _caption_themes_for_prompt(prompt):
     return themes or ["inspiration", "nature"]
 
 
-def _caption_for_scene(prompt, scene_index):
-    """Return a deterministic, non-repeating English caption (up to 120 scenes)."""
-    themes = _caption_themes_for_prompt(prompt)
-    theme = themes[scene_index % len(themes)]
-    # The selected phrase changes every cycle; the ending changes only after
-    # all base phrases have been used. The combination is unique for 128
-    # occurrences of the same theme (more than MAX_SCENES).
-    occurrence = scene_index // len(themes)
-    phrases = CAPTION_THEMES[theme]
-    phrase = phrases[occurrence % len(phrases)]
-    ending = CAPTION_ENDINGS[(occurrence // len(phrases)) % len(CAPTION_ENDINGS)]
-    return phrase + ending
+def _caption_for_scene(description, scene_index, objects=None):
+    """Describe the scene that is actually planned, not a rotating theme.
+
+    Only subjects in this scene's description or visible canonical composition
+    are mentioned. Repetition is preferable to an inaccurate caption.
+    """
+    text = _normalize(description)
+    scenery = (
+        ("mountain", "Mountains rise beyond the landscape"),
+        ("valley", "A peaceful valley stretches into the distance"),
+        ("sunrise", "Sunrise lights the landscape"),
+        ("sunset", "Sunset warms the landscape"),
+        ("night", "Night settles over the landscape"),
+        ("lake", "A lake rests within the landscape"),
+        ("river", "A river flows through the landscape"),
+        ("forest", "A forest fills the landscape"),
+        ("garden", "A garden brings color to the landscape"),
+        ("meadow", "A meadow stretches across the landscape"),
+    )
+    for keyword, caption in scenery:
+        if re.search(r"(?<!\w)" + re.escape(keyword) + r"s?(?!\w)", text):
+            return caption + "."
+
+    names = []
+    for obj in objects or []:
+        category = obj.get("category") if isinstance(obj, dict) else None
+        if category in DRAWABLE_CATEGORIES and category not in names:
+            names.append(category)
+    if names:
+        if len(names) == 1:
+            return f"A {names[0]} stands in the scene."
+        return "The scene shows " + ", ".join(names[:-1]) + " and " + names[-1] + "."
+    return "A peaceful landscape fills the scene."
 
 
 def _build_scene(
@@ -447,7 +468,7 @@ def _build_scene(
         })
 
     # Caption is based on the full user prompt, not a geometric object label.
-    caption = _caption_for_scene(caption_prompt or description, scene_index)
+    caption = _caption_for_scene(description, scene_index, extracted)
 
     return {
         "scene_id": f"scene_{scene_index + 1:03d}",
