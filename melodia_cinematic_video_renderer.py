@@ -19,7 +19,7 @@ import time
 from pathlib import Path
 from xml.etree import ElementTree as ET
 
-VERSION = "2.4.2"
+VERSION = "2.4.3"
 
 
 def _positive(value, name):
@@ -282,8 +282,13 @@ def _resolve_foreground_collisions(scene):
 
 
 def _scenic_ground_y(features):
-    """Match the exact visible ground boundary in the V2.9 SVG background."""
-    return 0.63 if features["water"] else 0.70
+    """Place objects visibly inside the land, not on the distant horizon.
+
+    The scenic background begins land at 0.70 (0.63 with water), but its
+    decorative trees stand below that line. Water begins at about 0.72, so
+    foreground objects in water scenes use the narrow land strip at 0.69.
+    """
+    return 0.69 if features["water"] else 0.82
 
 
 def _align_foreground_to_scenic_ground(scene, ground_y):
@@ -312,30 +317,57 @@ def _align_foreground_to_scenic_ground(scene, ground_y):
     return result
 
 
-def _render_scene_svg(scene, render_depth_svg, width, height):
-    """Merge scenic background and legacy artwork using one ground reference.
+def _verify_visible_foreground(scene, root, source_width, source_height, ground_y):
+    """Ensure final SVG foreground coordinates match the validated geometry.
 
-    Foreground collisions are resolved first. Then independent grounded
-    objects are anchored to the actual scenic ground line, rather than the
-    legacy composer's fixed 0.82 coordinate. Scenic decoration collision
-    filtering runs only after final foreground positions are established.
+    V1.6's automatic canvas-fit transform otherwise silently rescales and
+    recenters objects after grounding/collision resolution. In the scenic
+    renderer we remove that transform and verify actual object shape bounds.
     """
-    scene = _resolve_foreground_collisions(scene)
+    from melodia_automatic_scene_composer import object_bounds
+
+    namespace = "{http://www.w3.org/2000/svg}"
+    groups = {g.get("id"): g for g in root.iter(namespace + "g") if g.get("id")}
+    for obj in scene.get("objects", []):
+        if not obj.get("components"):
+            continue
+        group = groups.get(obj.get("id"))
+        if group is None:
+            raise ValueError(f"Missing rendered foreground object: {obj.get('id')}")
+        if any("transform" in node.attrib for node in group.iter()):
+            raise ValueError("Unexpected secondary transform inside foreground object")
+        if obj.get("category") in {"tree", "house", "vehicle", "animal", "flower"}:
+            left, top, right, bottom = object_bounds(obj)
+            if left < -0.001 or right > 1.001 or top < -0.001 or bottom > 1.001:
+                raise ValueError(f"Foreground object outside frame: {obj.get('id')}")
+
+
+def _render_scene_svg(scene, render_depth_svg, width, height):
+    """Compose scenic and foreground SVG without hidden post-layout fitting.
+
+    The foreground renderer V1.6 wraps all objects in an automatic
+    translate/scale transform. That transform changes already-grounded and
+    collision-checked coordinates. Remove only this outer canvas-fit transform
+    in scenic mode; keep all actual object shapes and the optimized MP4 path.
+    """
     prompt = scene.get("scenic_prompt")
     if not isinstance(prompt, str) or not prompt.strip():
-        return render_depth_svg(scene)
+        return render_depth_svg(_resolve_foreground_collisions(scene))
 
     from melodia_scenic_visual_engine import analyze_scenery, generate_scenic_svg
     features = analyze_scenery(prompt)
     if not any(features.values()):
-        return render_depth_svg(scene)
+        return render_depth_svg(_resolve_foreground_collisions(scene))
 
-    scene = _align_foreground_to_scenic_ground(scene, _scenic_ground_y(features))
-    original = render_depth_svg(scene)
-    scenic_root = ET.fromstring(generate_scenic_svg(
-        prompt, width=width, height=height))
-    _clear_scenic_collisions(scenic_root, scene, width, height)
-    original_root = _parse_legacy_svg(original)
+    ground_y = _scenic_ground_y(features)
+    scene = _align_foreground_to_scenic_ground(scene, ground_y)
+    scene = _resolve_foreground_collisions(scene)
+    # Collision resolution may shrink objects; anchor again, then ensure no
+    # collisions remain. Both operations act on actual component geometry.
+    scene = _align_foreground_to_scenic_ground(scene, ground_y)
+    scene = _resolve_foreground_collisions(scene)
+
+    original_root = _parse_legacy_svg(render_depth_svg(scene))
     namespace = "{http://www.w3.org/2000/svg}"
     original_viewbox = original_root.get("viewBox")
     if original_viewbox:
@@ -347,13 +379,23 @@ def _render_scene_svg(scene, render_depth_svg, width, height):
         x = y = 0.0
         source_w = float(original_root.get("width", width))
         source_h = float(original_root.get("height", height))
-    scale_x, scale_y = width / source_w, height / source_h
+
+    scenic_root = ET.fromstring(generate_scenic_svg(prompt, width=width, height=height))
+    _clear_scenic_collisions(scenic_root, scene, width, height)
     wrapper = ET.SubElement(scenic_root, namespace + "g", {
-        "transform": f"scale({scale_x:.9g} {scale_y:.9g}) translate({-x:.9g} {-y:.9g})"
+        "transform": f"scale({width/source_w:.9g} {height/source_h:.9g}) translate({-x:.9g} {-y:.9g})"
     })
-    for child in original_root:
-        if child.tag == namespace + "g" or child.tag == "g":
-            wrapper.append(child)
+    object_groups = [child for child in original_root if child.tag in {namespace + "g", "g"}]
+    if len(object_groups) != 1:
+        raise ValueError("Expected one shared foreground canvas group")
+    canvas_group = object_groups[0]
+    if "transform" not in canvas_group.attrib:
+        raise ValueError("Foreground canvas-fit transform not found; renderer needs review")
+    # CRITICAL: the original canvas fit repositions every tree and flower.
+    # Object coordinates are already normalized to the source viewBox.
+    del canvas_group.attrib["transform"]
+    wrapper.append(canvas_group)
+    _verify_visible_foreground(scene, canvas_group, source_w, source_h, ground_y)
     return ET.tostring(scenic_root, encoding="unicode")
 
 
