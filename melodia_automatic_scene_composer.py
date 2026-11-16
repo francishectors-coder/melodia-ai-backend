@@ -36,7 +36,7 @@ from melodia_prompt_scene_generator import (
     render_scene_svg,
 )
 
-VERSION = "1.8.1"
+VERSION = "1.8.2"
 
 GROUND_Y = 0.82
 
@@ -542,9 +542,11 @@ def render_composed_svg(scene):
 
     theme = THEMES[scene["theme"]]
 
+    svg_namespace = "http://www.w3.org/2000/svg"
+    ET.register_namespace("", svg_namespace)
+
     root = ET.Element(
-        "svg",
-        xmlns="http://www.w3.org/2000/svg",
+        f"{{{svg_namespace}}}svg",
         width=str(CANVAS_WIDTH),
         height=str(CANVAS_HEIGHT),
         viewBox=(
@@ -554,7 +556,7 @@ def render_composed_svg(scene):
 
     ET.SubElement(
         root,
-        "rect",
+        f"{{{svg_namespace}}}rect",
         width=str(CANVAS_WIDTH),
         height=str(CANVAS_HEIGHT),
         fill=theme["sky"],
@@ -567,7 +569,7 @@ def render_composed_svg(scene):
 
     ET.SubElement(
         root,
-        "circle",
+        f"{{{svg_namespace}}}circle",
         cx="875",
         cy="105",
         r=sun_radius,
@@ -580,7 +582,7 @@ def render_composed_svg(scene):
 
     ET.SubElement(
         root,
-        "rect",
+        f"{{{svg_namespace}}}rect",
         x="0",
         y=f"{ground_pixel:.6f}",
         width=str(CANVAS_WIDTH),
@@ -595,9 +597,7 @@ def render_composed_svg(scene):
         render_scene_svg(scene)
     )
 
-    namespace = (
-        "{http://www.w3.org/2000/svg}"
-    )
+    namespace = f"{{{svg_namespace}}}"
 
     for child in object_svg:
         if child.tag == namespace + "g":
