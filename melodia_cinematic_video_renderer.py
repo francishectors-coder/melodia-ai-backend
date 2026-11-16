@@ -222,14 +222,19 @@ def _resolve_foreground_collisions(scene):
     movable.sort(key=lambda i: (objects[i]["center"]["x"], i))
 
     def shrink(indices, factor):
+        # Ground-based geometry must scale around its bottom, not its centre.
+        # Scaling around the centre was lifting trunks and stems into the air.
         for i in indices:
             obj = objects[i]
-            cx, cy = obj["center"]["x"], obj["center"]["y"]
+            cx = obj["center"]["x"]
+            grounded = obj.get("category") in {"tree", "house", "vehicle", "animal", "flower"}
+            anchor_y = object_bounds(obj)[3] if grounded else obj["center"]["y"]
             for part in obj["components"]:
                 part["x"] = cx + (part["x"] - cx) * factor
-                part["y"] = cy + (part["y"] - cy) * factor
+                part["y"] = anchor_y + (part["y"] - anchor_y) * factor
                 part["width"] *= factor
                 part["height"] *= factor
+            obj["center"]["y"] = anchor_y + (obj["center"]["y"] - anchor_y) * factor
 
     if len(movable) > 1:
         widths = [object_bounds(objects[i])[2] - object_bounds(objects[i])[0]
@@ -259,6 +264,13 @@ def _resolve_foreground_collisions(scene):
             break
         involved = sorted({i for pair in pairs for i in pair})
         shrink(involved, 0.92)
+    # Re-anchor independent ground objects after all transformations.
+    # Do not change explicitly stacked objects (above/below/on_top_of).
+    for i in movable:
+        obj = objects[i]
+        dy = 0.82 - object_bounds(obj)[3]
+        objects[i] = shift_object(obj, 0.0, dy)
+
     remaining = collisions()
     if remaining:
         labels = [f"{objects[i].get('id', i)} / {objects[j].get('id', j)}"
