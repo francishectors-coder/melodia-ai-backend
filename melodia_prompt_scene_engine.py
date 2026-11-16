@@ -27,7 +27,7 @@ import math
 import re
 from pathlib import Path
 
-VERSION = "2.8.1"
+VERSION = "2.8.2"
 
 SUPPORTED_ASPECTS = {
     "16:9": (1280, 720),
@@ -301,14 +301,29 @@ def _extract_objects(text):
 
 
 def _scene_segments(prompt):
-    segments = [
-        part.strip()
-        for part in SCENE_SPLIT.split(prompt)
-        if part.strip()
-    ]
+    """Extract visual beats without treating output instructions as scenes.
 
-    return segments or [prompt.strip()]
-
+    Explicit sequences (followed by / finally / then) are preferred.  A
+    sentence about captions, music or rendering is never a visual beat.
+    """
+    text = prompt.strip().strip("[] ")
+    visual_text = re.split(
+        r"(?i)(?:\.\s*|;\s*)(?=(?:each scene|use |include |add |make |ensure |captions? |music |video ))",
+        text, maxsplit=1,
+    )[0]
+    visual_text = re.sub(
+        r"(?i)^\s*(?:create|generate|make|show|produce)\s+(?:a|an|the)?\s*",
+        "", visual_text,
+    )
+    segments = re.split(
+        r"(?i)\s*(?:,?\s+followed by\s+|,?\s+and finally\s+|,?\s+finally\s+|,?\s+then\s+)\s*",
+        visual_text,
+    )
+    cleaned = [part.strip(" ,.;[]") for part in segments if part.strip(" ,.;[]")]
+    if len(cleaned) == 1:
+        cleaned = [part.strip(" ,.;[]") for part in SCENE_SPLIT.split(visual_text)
+                   if part.strip(" ,.;[]")]
+    return cleaned or [prompt.strip()]
 
 
 # Curated English captions. No paid translation or language-model API is used.
@@ -384,38 +399,34 @@ def _caption_themes_for_prompt(prompt):
 
 
 def _caption_for_scene(description, scene_index, objects=None):
-    """Describe the scene that is actually planned, not a rotating theme.
-
-    Only subjects in this scene's description or visible canonical composition
-    are mentioned. Repetition is preferable to an inaccurate caption.
-    """
+    """Caption the setting first; never substitute a generic object label."""
     text = _normalize(description)
-    scenery = (
-        ("mountain", "Mountains rise beyond the landscape"),
-        ("valley", "A peaceful valley stretches into the distance"),
-        ("sunrise", "Sunrise lights the landscape"),
-        ("sunset", "Sunset warms the landscape"),
-        ("night", "Night settles over the landscape"),
-        ("lake", "A lake rests within the landscape"),
-        ("river", "A river flows through the landscape"),
-        ("forest", "A forest fills the landscape"),
-        ("garden", "A garden brings color to the landscape"),
-        ("meadow", "A meadow stretches across the landscape"),
-    )
-    for keyword, caption in scenery:
-        if re.search(r"(?<!\w)" + re.escape(keyword) + r"s?(?!\w)", text):
-            return caption + "."
-
-    names = []
-    for obj in objects or []:
-        category = obj.get("category") if isinstance(obj, dict) else None
-        if category in DRAWABLE_CATEGORIES and category not in names:
-            names.append(category)
-    if names:
-        if len(names) == 1:
-            return f"A {names[0]} stands in the scene."
-        return "The scene shows " + ", ".join(names[:-1]) + " and " + names[-1] + "."
-    return "A peaceful landscape fills the scene."
+    def has(*words):
+        return any(re.search(r"(?<!\w)" + re.escape(w) + r"s?(?!\w)", text)
+                   for w in words)
+    if has("garden", "flower", "rose", "meadow"):
+        if has("garden"):
+            return "Colorful flowers bloom in a peaceful garden."
+        return "Flowers brighten the peaceful landscape."
+    if has("lake", "lakeside", "pond"):
+        return ("The setting sun shines across a quiet lake." if has("sunset", "dusk")
+                else "Still waters reflect the beauty of the lakeside.")
+    if has("mountain", "valley", "hill"):
+        return ("Morning sunlight illuminates the mountain valley." if has("sunrise", "dawn", "morning")
+                else "Mountains rise beyond the peaceful valley.")
+    if has("river", "stream"):
+        return "A river flows gently through the landscape."
+    if has("forest", "woodland", "woods"):
+        return "A quiet forest stretches into the distance."
+    if has("sunset", "dusk"):
+        return "Warm sunset light fills the landscape."
+    if has("sunrise", "dawn"):
+        return "The first light of morning illuminates the landscape."
+    if has("tree"):
+        return "Trees stand beneath the open sky."
+    if has("house", "home"):
+        return "A home rests within the peaceful landscape."
+    return "A peaceful landscape unfolds before us."
 
 
 def _build_scene(
@@ -433,11 +444,20 @@ def _build_scene(
         item for item in _extract_objects(text)
         if item["category"] in DRAWABLE_CATEGORIES
     ]
-    # Keep the full composition fixed across scenes, including objects that
-    # are not named again in later instructions. The description still drives
-    # the scene's caption focus, but never moves an existing object.
-    if fallback_objects:
-        extracted = [dict(item) for item in fallback_objects]
+    # Each visual beat gets its own foreground.  Reusing all objects from the
+    # complete prompt made a mountain scene inherit unrelated garden flowers.
+    if not extracted and fallback_objects:
+        preferred = ("flower" if re.search(r"\b(garden|meadow|flower)\b", text)
+                     else "tree" if re.search(r"\b(mountain|valley|forest|lake|lakeside|river|hill)\b", text)
+                     else None)
+        selected = next((item for item in fallback_objects
+                         if item["category"] == preferred), None)
+        if selected is None and preferred is not None:
+            selected = {"category": preferred, "position": "left",
+                        "depth": "middle", "occurrence": 1}
+        if selected is None:
+            selected = fallback_objects[0]
+        extracted = [dict(selected)]
     if not extracted:
         raise ValueError(
             "Prompt has no drawable objects. Current geometric renderer supports: "
@@ -518,10 +538,11 @@ def generate_prompt_scenes(
         if item["category"] in DRAWABLE_CATEGORIES
     ]
     if not fallback_objects:
-        raise ValueError(
-            "Prompt has no drawable objects. Current geometric renderer supports: "
-            + ", ".join(sorted(DRAWABLE_CATEGORIES))
-        )
+        # The current renderer still requires a drawable foreground object.
+        # Supply one neutral tree for scenic-only prompts, without changing
+        # the requested setting or the English caption.
+        fallback_objects = [{"category": "tree", "position": "left",
+                             "depth": "middle", "occurrence": 1}]
 
     # Establish one canonical composition for the entire video. Later
     # sentences often mention the same object again (for example, "keep the
@@ -594,7 +615,7 @@ def generate_prompt_scenes(
                 duration,
                 scene_count,
                 index < len(segments),
-                fallback_objects=canonical_objects,
+                fallback_objects=fallback_objects,
                 caption_prompt=prompt,
             )
         )
