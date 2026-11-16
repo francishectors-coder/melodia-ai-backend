@@ -457,6 +457,10 @@ def prepare_production_plan(
                 scenic_prompt, description, index, len(scenes)
             )
             converted_scene["scenic_seed"] = index
+            # Explicit traceability for production validation.  The caption
+            # and scenic prompt must originate from this same scene.
+            converted_scene["scene_visual_description"] = description
+            converted_scene["caption_scene_id"] = scene_id
 
         converted.append(converted_scene)
 
