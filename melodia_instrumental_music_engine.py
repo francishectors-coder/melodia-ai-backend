@@ -14,7 +14,7 @@ import struct
 import wave
 from pathlib import Path
 
-VERSION = "2.8"
+VERSION = "2.9"
 SAMPLE_RATE = 22050
 MAX_DURATION_SECONDS = 600.0
 
@@ -103,109 +103,84 @@ def _melody_note(root: int, step: int, minor: bool) -> int:
 
 
 def _build_events(duration: float, config: dict) -> list[tuple]:
-    """Precompose note events without storing the full audio in memory."""
+    """Arrange varied musical sections without storing waveform samples."""
     beat = 60.0 / config["bpm"]
-    bar = 4 * beat
-    events = []
-    minor = config["mode"] == "minor"
-    chord = (0, 3, 7) if minor else (0, 4, 7)
+    bar = 4.0 * beat
     bar_count = math.ceil(duration / bar)
-
+    minor = config["mode"] == "minor"
+    chord_intervals = (0, 3, 7) if minor else (0, 4, 7)
+    events = []
+    roots = config["roots"]
+    lead = config["lead"]
+    # Each section has its own progression and melodic character.
+    progressions = (
+        (0, 1, 2, 3),
+        (0, 2, 3, 1),
+        (1, 3, 0, 2),
+        (2, 1, 3, 0),
+        (0, 3, 1, 2),
+        (3, 2, 1, 0),
+    )
+    section_bars = 8
     for b in range(bar_count):
         start = b * bar
-        root = config["roots"][b % len(config["roots"])]
-        remaining = max(0.0, duration - start)
-
+        remaining = duration - start
         if remaining <= 0:
             break
-
-        chord_length = min(bar + .10, remaining)
-
-        for offset in chord:
-            events.append(
-                (start, chord_length, root + offset, "strings", .115)
-            )
-
-        events.append(
-            (
-                start,
-                min(2 * beat, remaining),
-                root - 12,
-                "piano",
-                .18,
-            )
-        )
-
-        if remaining > 2 * beat:
-            events.append(
-                (
-                    start + 2 * beat,
-                    min(2 * beat, remaining - 2 * beat),
-                    root - 5,
-                    "piano",
-                    .12,
-                )
-            )
-
-        # Sparse arpeggios, rather than a constant electronic pulse.
-        for j, offset in enumerate(
-            (0, 7, 4 if not minor else 3, 7)
-        ):
-            t = start + j * beat
-
+        section = b // section_bars
+        within = b % section_bars
+        progression = progressions[section % len(progressions)]
+        root_index = progression[within % 4]
+        root = roots[root_index]
+        # Each 8-bar section changes the texture and melody.
+        texture = section % 4
+        intensity = (0.80, 1.00, 1.12, 0.88)[texture]
+        for offset in chord_intervals:
+            events.append((start, min(bar + .08, remaining), root + offset,
+                           "strings", .095 * intensity))
+        # Alternating bass motion and occasional passing tones.
+        for pos, pitch, strength in ((0, root - 12, .16),
+                                     (2, root - (7 if within % 2 else 5), .10)):
+            t = start + pos * beat
             if t < duration:
-                events.append(
-                    (
-                        t,
-                        min(.78 * beat, duration - t),
-                        root + offset + 12,
-                        "piano",
-                        .10,
-                    )
-                )
-
-        # One melodic phrase spans two bars.
+                events.append((t, min(1.7 * beat, duration - t), pitch,
+                               "piano", strength * intensity))
+        # Arpeggio patterns vary between sections, with intentional rests.
+        arp_patterns = (
+            ((0, 0), (2, 7)),
+            ((0, 0), (1, chord_intervals[1]), (2, 7), (3, chord_intervals[1])),
+            ((.5, 7), (1.5, chord_intervals[1]), (2.5, 0), (3.5, 7)),
+            ((0, 0), (1.5, 7), (3, chord_intervals[1])),
+        )
+        for pos, offset in arp_patterns[texture]:
+            t = start + pos * beat
+            if t < duration:
+                events.append((t, min(.70 * beat, duration - t),
+                               root + 12 + offset, "piano", .075 * intensity))
+        # Each two-bar phrase is transformed by section, avoiding a fixed
+        # four-phrase loop. The first bar of each section is deliberately sparse.
         if b % 2 == 0:
-            phrase = PHRASES[
-                (b // 2) % len(PHRASES)
-            ]
-
+            phrase_index = (b // 2 + section * 3) % len(PHRASES)
+            phrase = PHRASES[phrase_index]
+            transpose = (0, 1, -1, 2, 0, -2)[section % 6]
+            direction = -1 if section % 3 == 2 else 1
             for pos, step, beats_long in phrase:
+                if texture == 0 and pos in (1.5, 5):
+                    continue
                 t = start + pos * beat
-
                 if t >= duration:
                     continue
-
-                active_bar = int(t / bar)
-                active_root = config["roots"][
-                    active_bar % len(config["roots"])
-                ]
-
-                note = _melody_note(
-                    active_root,
-                    step,
-                    minor,
-                )
-
-                length = min(
-                    beats_long * beat * .92,
-                    duration - t,
-                )
-
-                events.append(
-                    (
-                        t,
-                        length,
-                        note,
-                        config["lead"],
-                        .24,
-                    )
-                )
-
-    return sorted(
-        events,
-        key=lambda event: event[0],
-    )
+                active_bar = min(int(t / bar), bar_count - 1)
+                active_section = active_bar // section_bars
+                active_progression = progressions[active_section % len(progressions)]
+                active_root = roots[active_progression[active_bar % 4]]
+                melodic_step = max(0, min(6, 3 + direction * (step - 3) + transpose))
+                pitch = _melody_note(active_root, melodic_step, minor)
+                # Gentle secondary timbre in alternate sections.
+                timbre = lead if texture in (0, 2) else ("bells" if lead != "bells" else "flute")
+                length = min(beats_long * beat * .91, duration - t)
+                events.append((t, length, pitch, timbre, .19 * intensity))
+    return sorted(events, key=lambda event: event[0])
 
 
 def generate_instrumental(
