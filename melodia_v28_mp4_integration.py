@@ -16,7 +16,9 @@ import copy
 import json
 import math
 import tempfile
+import time
 from pathlib import Path
+from datetime import datetime, timezone
 
 from melodia_prompt_cinematic_integration import (
     generate_cinematic_plan,
@@ -41,6 +43,13 @@ from melodia_scene_depth_engine import (
 )
 
 VERSION = "2.8"
+
+
+def _timing(stage, seconds):
+    """Emit a timestamped, flushed timing line for Render logs."""
+    stamp = datetime.now(timezone.utc).isoformat()
+    print(f"MELODIA_TIMING {stamp} stage={stage} seconds={seconds:.3f}", flush=True)
+
 
 ASPECTS = {
     "16:9": (1280, 720),
@@ -516,6 +525,10 @@ def produce_v28_video(
     V2.8 cinematic integration result.
     """
 
+    total_started = time.perf_counter()
+    stage_started = time.perf_counter()
+    _timing("job_start", 0.0)
+
     if (prompt is None) == (
         integration_result is None
     ):
@@ -563,6 +576,9 @@ def produce_v28_video(
                 "Existing plan aspect ratio mismatch"
             )
 
+    _timing("scene_planning", time.perf_counter() - stage_started)
+    stage_started = time.perf_counter()
+
     # Translate only when a second language was requested and the caller
     # did not already provide verified translations. English remains intact.
     language = _validate_language(bilingual_language)
@@ -591,12 +607,18 @@ def produce_v28_video(
             english_captions[scene_id] = english.strip()
         bilingual_captions = translate_captions(english_captions, language)
 
+    _timing("caption_translation", time.perf_counter() - stage_started)
+    stage_started = time.perf_counter()
+
     production_plan = prepare_production_plan(
         integration_result,
         bilingual_language=language,
         bilingual_captions=bilingual_captions,
         scenic_prompt=(prompt if prompt is not None else integration_result.get("prompt")),
     )
+
+    _timing("geometry_preparation", time.perf_counter() - stage_started)
+    stage_started = time.perf_counter()
 
     requested = _positive_number(
         integration_result.get(
@@ -653,6 +675,9 @@ def produce_v28_video(
                 duration_seconds=total_requested,
             )
 
+        _timing("music_generation_and_setup", time.perf_counter() - stage_started)
+        stage_started = time.perf_counter()
+
         result = produce_video(
             production_plan,
             output,
@@ -665,6 +690,9 @@ def produce_v28_video(
             ffmpeg=ffmpeg,
             promo_seconds=promo_seconds,
         )
+
+    _timing("mp4_production", time.perf_counter() - stage_started)
+    _timing("total_generation", time.perf_counter() - total_started)
 
     music_mode = "provided" if music is not None else (
         "automatic" if auto_music else "disabled"
