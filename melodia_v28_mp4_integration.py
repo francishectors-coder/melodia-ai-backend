@@ -331,48 +331,14 @@ def _convert_scene(scene, learned, seed):
 
 
 def _scenic_prompt_for_scene(full_prompt, description, index, count):
-    """Build a different illustrated background focus per scene.
+    """Use this scene's description as the source of scenic features.
 
-    The renderer accepts a single text description per scene. Rotate through
-    scenery features actually requested by the user, without adding unrelated
-    features. Object identities and coordinates are intentionally untouched.
+    Do not rotate through unrelated keywords from the complete video prompt.
+    The renderer's seeded scenery variation is retained independently.
     """
-    import re
-
-    text = full_prompt if isinstance(full_prompt, str) else ""
-    text = text.strip()
-    if not text:
-        text = description
-
-    categories = (
-        ("sunrise", ("sunrise", "dawn", "morning")),
-        ("mountains", ("mountain", "mountains", "hill", "hills", "valley")),
-        ("lake", ("lake", "pond", "river", "waterfall", "ocean", "sea")),
-        ("forest", ("forest", "woods", "woodland", "trees", "tree")),
-        ("garden", ("garden", "flowers", "flower", "meadow", "park")),
-        ("sunset", ("sunset", "dusk", "evening")),
-        ("night", ("night", "moonlight", "starry")),
-        ("clouds", ("cloud", "clouds", "cloudy")),
-    )
-    found = [
-        name for name, aliases in categories
-        if any(re.search(r"(?<!\w)" + re.escape(word) + r"(?!\w)", text, re.I)
-               for word in aliases)
-    ]
-    if not found:
-        return description
-
-    # Rotate related scenic subjects, not the entire prompt. The original
-    # caption and object composition are preserved in separate scene fields.
-    # When a single feature was requested, vary the sky treatment without
-    # inventing additional objects.
-    focus_index = (index * len(found) // max(1, count)) % len(found)
-    focus = found[focus_index]
-    companions = [name for name in found if name != focus]
-    if companions and count > 1:
-        companion = found[(focus_index + 1) % len(found)]
-        return f"Beautiful scenic landscape featuring {focus} and {companion}."
-    return f"Beautiful scenic landscape featuring {focus}."
+    if not isinstance(description, str) or not description.strip():
+        raise ValueError("Missing description for scenic scene")
+    return description.strip()
 
 
 def prepare_production_plan(
