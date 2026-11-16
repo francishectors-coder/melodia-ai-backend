@@ -165,65 +165,105 @@ def _clear_scenic_collisions(scenic_root, scene, width, height):
 
 
 def _resolve_foreground_collisions(scene):
-    """Fit colliding ground objects apart without dropping requested artwork.
+    """Resolve all non-intentional foreground overlaps, or fail explicitly.
 
-    Operates on a private scene copy, deterministically. First use the existing
-    V1.8 horizontal layout algorithm; only invoke it when two visible object
-    bounds actually intersect. If protected relationships prevent that layout
-    from separating a pair, reduce their geometry around their own centers.
+    Uses full component bounds (including flower petals and tree canopies).
+    Keeps objects in their original left-to-right order, preserves their
+    identities, and does not change the caller's scene. Ground-based objects
+    are laid out horizontally; intentionally stacked objects are exempted.
     """
-    from melodia_automatic_scene_composer import (
-        object_bounds, separate_horizontal_overlaps,
-    )
+    from melodia_automatic_scene_composer import object_bounds, shift_object
 
-    objects = scene.get("objects", [])
+    adjusted = copy.deepcopy(scene)
+    objects = adjusted.get("objects", [])
     if len(objects) < 2:
-        return scene
-
-    def collisions(items):
-        pairs = []
-        for i, first in enumerate(items):
-            if not first.get("components"):
-                continue
-            a = object_bounds(first)
-            for j in range(i + 1, len(items)):
-                second = items[j]
-                if not second.get("components"):
-                    continue
-                # Respect explicitly requested vertical stacking.
-                relations = scene.get("relationships", [])
-                first_id, second_id = first.get("id"), second.get("id")
-                protected = any(
-                    isinstance(rel, dict)
-                    and {rel.get("subject"), rel.get("object")} == {first_id, second_id}
-                    and rel.get("relation") in ("above", "below", "on_top_of")
-                    for rel in relations
-                )
-                if not protected and _bounds_intersect(a, object_bounds(second), 0.012):
-                    pairs.append((i, j))
-        return pairs
-
-    if not collisions(objects):
-        return scene
-    adjusted = separate_horizontal_overlaps(copy.deepcopy(scene), gap=0.035)
-    if not collisions(adjusted["objects"]):
         return adjusted
 
-    # Final fallback for exceptionally wide or vertically overlapping artwork:
-    # scale the actual shapes rather than silently removing any requested item.
-    for _ in range(16):
-        pairs = collisions(adjusted["objects"])
-        if not pairs:
-            break
-        involved = {idx for pair in pairs for idx in pair}
-        for idx in involved:
-            obj = adjusted["objects"][idx]
+    gap = 0.018
+    margin = 0.025
+    vertical = {"above", "below", "on_top_of"}
+    relationships = adjusted.get("relationships", [])
+
+    def intentionally_stacked(a, b):
+        ids = {a.get("id"), b.get("id")}
+        for rel in relationships:
+            if not isinstance(rel, dict) or rel.get("relation") not in vertical:
+                continue
+            target = rel.get("target", rel.get("object"))
+            if {rel.get("subject"), target} == ids:
+                return True
+        return False
+
+    def collisions():
+        result = []
+        for i, first in enumerate(objects):
+            if not first.get("components"):
+                continue
+            bounds_a = object_bounds(first)
+            for j in range(i + 1, len(objects)):
+                second = objects[j]
+                if not second.get("components") or intentionally_stacked(first, second):
+                    continue
+                if _bounds_intersect(bounds_a, object_bounds(second), gap):
+                    result.append((i, j))
+        return result
+
+    if not collisions():
+        return adjusted
+
+    # Arrange all movable ground objects using the actual component widths.
+    # Do not reorder objects: the prompt's left/centre/right order is retained.
+    ground_categories = {"tree", "house", "vehicle", "animal", "flower"}
+    movable = [i for i, obj in enumerate(objects)
+               if obj.get("components") and obj.get("category") in ground_categories
+               and not any(isinstance(rel, dict) and rel.get("relation") in vertical
+                           and obj.get("id") in {rel.get("subject"), rel.get("target", rel.get("object"))}
+                           for rel in relationships)]
+    movable.sort(key=lambda i: (objects[i]["center"]["x"], i))
+
+    def shrink(indices, factor):
+        for i in indices:
+            obj = objects[i]
             cx, cy = obj["center"]["x"], obj["center"]["y"]
             for part in obj["components"]:
-                part["x"] = cx + (part["x"] - cx) * 0.90
-                part["y"] = cy + (part["y"] - cy) * 0.90
-                part["width"] *= 0.90
-                part["height"] *= 0.90
+                part["x"] = cx + (part["x"] - cx) * factor
+                part["y"] = cy + (part["y"] - cy) * factor
+                part["width"] *= factor
+                part["height"] *= factor
+
+    if len(movable) > 1:
+        widths = [object_bounds(objects[i])[2] - object_bounds(objects[i])[0]
+                  for i in movable]
+        space = 1.0 - 2.0 * margin
+        required = sum(widths) + gap * (len(movable) - 1)
+        if required > space:
+            usable = space - gap * (len(movable) - 1)
+            if usable <= 0:
+                raise ValueError("Too many foreground objects to separate on canvas")
+            shrink(movable, min(1.0, usable / sum(widths) * 0.995))
+            widths = [object_bounds(objects[i])[2] - object_bounds(objects[i])[0]
+                      for i in movable]
+            required = sum(widths) + gap * (len(movable) - 1)
+        cursor = max(margin, (1.0 - required) / 2.0)
+        for i, width_i in zip(movable, widths):
+            left = object_bounds(objects[i])[0]
+            objects[i] = shift_object(objects[i], cursor - left, 0.0)
+            cursor += width_i + gap
+
+    # Resolve exceptional collisions (including non-ground objects) by
+    # shrinking the actual shapes, not by silently dropping requested items.
+    # A final explicit check prevents falsely reporting success.
+    for _ in range(64):
+        pairs = collisions()
+        if not pairs:
+            break
+        involved = sorted({i for pair in pairs for i in pair})
+        shrink(involved, 0.92)
+    remaining = collisions()
+    if remaining:
+        labels = [f"{objects[i].get('id', i)} / {objects[j].get('id', j)}"
+                  for i, j in remaining]
+        raise ValueError("Unresolved foreground object overlap: " + ", ".join(labels))
     return adjusted
 
 
