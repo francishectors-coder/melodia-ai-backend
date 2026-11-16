@@ -36,7 +36,7 @@ from melodia_prompt_scene_generator import (
     render_scene_svg,
 )
 
-VERSION = "1.8"
+VERSION = "1.8.1"
 
 GROUND_Y = 0.82
 
@@ -455,6 +455,34 @@ def separate_horizontal_overlaps(scene, gap=0.025):
     return result
 
 
+
+def finalize_ground_alignment(scene):
+    """Anchor each independent ground object after all fitting and spacing.
+
+    The fitting stage scales geometry around a shared ground reference. Objects
+    with different original bottom coordinates can therefore finish at slightly
+    different heights. This final pass aligns the actual component bottom of
+    each independent ground object to the visible ground line. Objects in
+    explicit above/below relationships are left untouched to preserve those
+    intentional arrangements.
+    """
+    result = copy.deepcopy(scene)
+    protected = vertical_object_ids(result)
+    corrected = []
+
+    for obj in result["objects"]:
+        if obj.get("category") not in GROUND_CATEGORIES or obj.get("id") in protected:
+            corrected.append(obj)
+            continue
+
+        bottom = object_bounds(obj)[3]
+        dy = GROUND_Y - bottom
+        corrected.append(shift_object(obj, 0.0, dy) if abs(dy) > 1e-7 else obj)
+
+    result["objects"] = corrected
+    return result
+
+
 def compose_scene(
     prompt,
     learned,
@@ -487,6 +515,9 @@ def compose_scene(
     )
 
     composed = separate_horizontal_overlaps(composed)
+
+    # Final grounding must follow all scaling and horizontal repositioning.
+    composed = finalize_ground_alignment(composed)
 
     composed["version"] = VERSION
     composed["base_version"] = "1.7"
