@@ -14,6 +14,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+import time
 from pathlib import Path
 from xml.etree import ElementTree as ET
 
@@ -423,10 +424,12 @@ def render_video(plan, output, *, width=1280, height=720, fps=30, ffmpeg="ffmpeg
                         "-threads", "1", "-filter_threads", "1", *args], check=True)
 
     def encode_args(destination):
-        return ["-an", "-c:v", "libx264", "-threads", "1", "-preset", "veryfast",
+        return ["-an", "-c:v", "libx264", "-threads", "1", "-preset", "ultrafast",
                 "-crf", "22", "-pix_fmt", "yuv420p", "-r", str(fps),
                 "-video_track_timescale", str(fps * 1000), str(destination)]
 
+    render_started = time.perf_counter()
+    print("MELODIA_RENDER stage=start seconds=0.000", flush=True)
     with tempfile.TemporaryDirectory(prefix="melodia_v24_stream_") as directory:
         tmp = Path(directory)
         images = []
@@ -439,6 +442,8 @@ def render_video(plan, output, *, width=1280, height=720, fps=30, ffmpeg="ffmpeg
                              output_width=width, output_height=height)
             images.append(png)
 
+        print(f"MELODIA_RENDER stage=scene_images seconds={time.perf_counter() - render_started:.3f}", flush=True)
+        segments_started = time.perf_counter()
         segments = []
         for i in range(n):
             core = tmp / f"segment_{len(segments):04d}.mp4"
@@ -473,6 +478,7 @@ def render_video(plan, output, *, width=1280, height=720, fps=30, ffmpeg="ffmpeg
                         "-frames:v", str(count), *encode_args(transition_file)])
             segments.append(transition_file)
 
+        print(f"MELODIA_RENDER stage=segment_encoding seconds={time.perf_counter() - segments_started:.3f}", flush=True)
         # All segments share codec, dimensions, frame rate, and encoder settings.
         # Stream-copy concatenation avoids decoding all scenes simultaneously.
         concat_file = tmp / "segments.txt"
@@ -482,6 +488,7 @@ def render_video(plan, output, *, width=1280, height=720, fps=30, ffmpeg="ffmpeg
         run_ffmpeg(["-f", "concat", "-safe", "0", "-i", str(concat_file),
                     "-c", "copy", "-movflags", "+faststart", str(output)])
 
+    print(f"MELODIA_RENDER stage=total_silent_render seconds={time.perf_counter() - render_started:.3f}", flush=True)
     return {"version": VERSION, "output": str(output),
             "expected_duration_seconds": round(sum(core_frames + overlap_frames) / fps, 6),
             "scene_count": n, "width": width, "height": height, "fps": fps}
