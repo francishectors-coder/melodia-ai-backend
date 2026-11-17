@@ -21,6 +21,7 @@ from flask import (
 )
 
 from melodia_v28_web_job_adapter import process_v28_job
+from melodia_v31_web_job_adapter import process_v31_job
 from melodia_prompt_analyzer import analyze_prompt
 from melodia_job_manager import create_video_job
 from melodia_video_worker import (
@@ -190,7 +191,9 @@ def background_worker():
                     job.get("job_id")
                 )
 
-                if job.get("engine") == "v2.8":
+                if job.get("engine") == "v3.1":
+                    process_v31_job(job_file, job)
+                elif job.get("engine") == "v2.8":
                     process_v28_job(job_file, job)
                 else:
                     process_job(job_file, job)
@@ -310,6 +313,32 @@ def prepare_video_settings(data):
     # Keep existing whole-minute jobs in their original integer format.
     if minutes.is_integer():
         minutes = int(minutes)
+
+    # V3.1 is opt-in only; the existing V2.8 and legacy routes remain intact.
+    if "[V3.1 TEST]" in prompt.upper():
+        if minutes != 0.5:
+            raise ValueError("V3.1 test requires 30 seconds")
+        aspect = data.get("aspect_ratio", "16:9")
+        if aspect not in ASPECT_RATIOS:
+            raise ValueError("Invalid aspect ratio")
+        if data.get("language", "English") != "English":
+            raise ValueError("V3.1 test supports English only")
+        if data.get("captions", "single") != "single":
+            raise ValueError("V3.1 test supports single captions only")
+        selected_music = data.get("music", "peaceful")
+        if selected_music not in MUSIC_MODES:
+            raise ValueError("Invalid V3.1 music selection")
+        selected_audio = "none" if selected_music == "none" else "music"
+        settings = {
+            "prompt": prompt, "language": "English", "captions": "single",
+            "second_language": None, "music": selected_music, "duration": 0.5,
+            "aspect_ratio": aspect, "audio": selected_audio
+        }
+        return settings, {
+            "mode": mode, "recommendation_source": "v31_opt_in",
+            "subject": "v31_test", "recommended_style": "unified_scenes",
+            "background": "v31_verified_svg", "audio": selected_audio
+        }
 
     # Explicit no-Gemini test. This bypasses prompt analysis and forces
     # the exact settings expected by the isolated worker test path.
@@ -487,7 +516,10 @@ def generate():
     # jobs have an unambiguous route even after server restarts.
     with job_lock:
         job = create_video_job(settings)
-        job["engine"] = "v2.8" if use_v28 else "legacy"
+        job["engine"] = (
+            "v3.1" if "[V3.1 TEST]" in settings["prompt"].upper()
+            else "v2.8" if use_v28 else "legacy"
+        )
         save_job(job)
 
     start_background_worker()
